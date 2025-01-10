@@ -17,12 +17,12 @@
 package remotesvr
 
 import (
+	"context"
 	"net"
-	"os"
 	"sync"
-	"syscall"
 
-	"github.com/cloudwego/kitex/pkg/endpoint"
+	"github.com/cloudwego/kitex/pkg/gofunc"
+	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote"
 )
 
@@ -30,24 +30,22 @@ import (
 type Server interface {
 	Start() chan error
 	Stop() error
+	Address() net.Addr
 }
 
 type server struct {
 	opt      *remote.ServerOption
 	listener net.Listener
 	transSvr remote.TransServer
-
-	inkHdlFunc endpoint.Endpoint
 	sync.Mutex
 }
 
 // NewServer creates a remote server.
-func NewServer(opt *remote.ServerOption, inkHdlFunc endpoint.Endpoint, transHdlr remote.ServerTransHandler) (Server, error) {
+func NewServer(opt *remote.ServerOption, transHdlr remote.ServerTransHandler) (Server, error) {
 	transSvr := opt.TransServerFactory.NewTransServer(opt, transHdlr)
 	s := &server{
-		opt:        opt,
-		inkHdlFunc: inkHdlFunc,
-		transSvr:   transSvr,
+		opt:      opt,
+		transSvr: transSvr,
 	}
 	return s, nil
 }
@@ -65,19 +63,22 @@ func (s *server) Start() chan error {
 	s.listener = ln
 	s.Unlock()
 
-	go func() { errCh <- s.transSvr.BootstrapServer() }()
+	gofunc.GoFunc(context.Background(), func() { errCh <- s.transSvr.BootstrapServer(ln) })
 	return errCh
 }
 
 func (s *server) buildListener() (ln net.Listener, err error) {
-	addr := s.opt.Address
-	if addr.Network() == "unix" {
-		syscall.Unlink(addr.String())
-		os.Chmod(addr.String(), os.ModePerm)
+	if s.opt.Listener != nil {
+		klog.Infof("KITEX: server listen at addr=%s", s.opt.Listener.Addr().String())
+		return s.opt.Listener, nil
 	}
-
-	s.opt.Logger.Infof("KITEX: server listen at: %s", addr.String())
-	return s.transSvr.CreateListener(addr)
+	addr := s.opt.Address
+	if ln, err = s.transSvr.CreateListener(addr); err != nil {
+		klog.Errorf("KITEX: server listen failed, addr=%s error=%s", addr.String(), err)
+	} else {
+		klog.Infof("KITEX: server listen at addr=%s", ln.Addr().String())
+	}
+	return
 }
 
 // Stop stops the server gracefully.
@@ -89,4 +90,13 @@ func (s *server) Stop() (err error) {
 		s.listener = nil
 	}
 	return
+}
+
+func (s *server) Address() net.Addr {
+	s.Lock()
+	defer s.Unlock()
+	if s.listener != nil {
+		return s.listener.Addr()
+	}
+	return nil
 }

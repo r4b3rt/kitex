@@ -17,33 +17,33 @@
 package limiter
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 )
 
-var (
-	fixedWindowTime = time.Second
-)
+var fixedWindowTime = time.Second
 
 // qpsLimiter implements the RateLimiter interface.
 type qpsLimiter struct {
-	limit    int32
-	tokens   int32
-	interval time.Duration
-	once     int32
-	ticker   *time.Ticker
+	limit      int32
+	tokens     int32
+	interval   time.Duration
+	once       int32
+	ticker     *time.Ticker
+	tickerDone chan bool
 }
 
 // NewQPSLimiter creates qpsLimiter.
 func NewQPSLimiter(interval time.Duration, limit int) RateLimiter {
+	once := calcOnce(interval, limit)
 	l := &qpsLimiter{
 		limit:    int32(limit),
-		tokens:   int32(limit),
 		interval: interval,
-		once:     calcOnce(interval, limit),
-		ticker:   time.NewTicker(interval),
+		tokens:   once,
+		once:     once,
 	}
-	go l.startTicker()
+	go l.startTicker(interval)
 	return l
 }
 
@@ -52,23 +52,27 @@ func (l *qpsLimiter) UpdateLimit(limit int) {
 	once := calcOnce(l.interval, limit)
 	atomic.StoreInt32(&l.limit, int32(limit))
 	atomic.StoreInt32(&l.once, once)
+	l.resetTokens(once)
 }
 
 // UpdateQPSLimit update the interval and limit. It is **not** concurrent-safe.
 func (l *qpsLimiter) UpdateQPSLimit(interval time.Duration, limit int) {
-	atomic.StoreInt32(&l.limit, int32(limit))
 	once := calcOnce(interval, limit)
+	atomic.StoreInt32(&l.limit, int32(limit))
 	atomic.StoreInt32(&l.once, once)
+	l.resetTokens(once)
 	if interval != l.interval {
 		l.interval = interval
 		l.stopTicker()
-		l.ticker = time.NewTicker(interval)
-		go l.startTicker()
+		go l.startTicker(interval)
 	}
 }
 
-// Acquire adds 1.
-func (l *qpsLimiter) Acquire() bool {
+// Acquire one token.
+func (l *qpsLimiter) Acquire(ctx context.Context) bool {
+	if atomic.LoadInt32(&l.limit) <= 0 {
+		return true
+	}
 	if atomic.LoadInt32(&l.tokens) <= 0 {
 		return false
 	}
@@ -76,36 +80,58 @@ func (l *qpsLimiter) Acquire() bool {
 }
 
 // Status returns the current status.
-func (l *qpsLimiter) Status() (max, cur int, interval time.Duration) {
+func (l *qpsLimiter) Status(ctx context.Context) (max, cur int, interval time.Duration) {
 	max = int(atomic.LoadInt32(&l.limit))
 	cur = int(atomic.LoadInt32(&l.tokens))
 	interval = l.interval
 	return
 }
 
-func (l *qpsLimiter) startTicker() {
-	ch := l.ticker.C
-	for range ch {
-		l.updateToken()
+func (l *qpsLimiter) startTicker(interval time.Duration) {
+	l.ticker = time.NewTicker(interval)
+	defer l.ticker.Stop()
+	l.tickerDone = make(chan bool, 1)
+	tc := l.ticker.C
+	td := l.tickerDone
+	// ticker and tickerDone can be reset, cannot use l.ticker or l.tickerDone directly
+	for {
+		select {
+		case <-tc:
+			l.updateToken()
+		case <-td:
+			return
+		}
 	}
 }
 
 func (l *qpsLimiter) stopTicker() {
-	l.ticker.Stop()
+	if l.tickerDone == nil {
+		return
+	}
+	select {
+	case l.tickerDone <- true:
+	default:
+	}
 }
 
 // Some deviation is allowed here to gain better performance.
 func (l *qpsLimiter) updateToken() {
-	var v int32
-	v = atomic.LoadInt32(&l.tokens)
-	if v < 0 {
-		v = atomic.LoadInt32(&l.once)
-	} else if v+atomic.LoadInt32(&l.once) > atomic.LoadInt32(&l.limit) {
-		v = atomic.LoadInt32(&l.limit)
-	} else {
-		v = v + atomic.LoadInt32(&l.once)
+	if atomic.LoadInt32(&l.limit) < atomic.LoadInt32(&l.tokens) {
+		return
 	}
-	atomic.StoreInt32(&l.tokens, v)
+
+	once := atomic.LoadInt32(&l.once)
+
+	delta := atomic.LoadInt32(&l.limit) - atomic.LoadInt32(&l.tokens)
+
+	if delta > once || delta < 0 {
+		delta = once
+	}
+
+	newTokens := atomic.AddInt32(&l.tokens, delta)
+	if newTokens < once {
+		atomic.StoreInt32(&l.tokens, once)
+	}
 }
 
 func calcOnce(interval time.Duration, limit int) int32 {
@@ -117,4 +143,10 @@ func calcOnce(interval time.Duration, limit int) int32 {
 		once = 0
 	}
 	return once
+}
+
+func (l *qpsLimiter) resetTokens(once int32) {
+	if atomic.LoadInt32(&l.tokens) > once {
+		atomic.StoreInt32(&l.tokens, once)
+	}
 }

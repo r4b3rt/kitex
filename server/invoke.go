@@ -35,7 +35,7 @@ type InvokeCaller interface {
 
 // Invoker is the abstraction for invoker.
 type Invoker interface {
-	RegisterService(svcInfo *serviceinfo.ServiceInfo, handler interface{}) error
+	RegisterService(svcInfo *serviceinfo.ServiceInfo, handler interface{}, opts ...RegisterOption) error
 	Init() (err error)
 	InvokeCaller
 }
@@ -48,7 +48,8 @@ type tInvoker struct {
 // NewInvoker creates new Invoker.
 func NewInvoker(opts ...Option) Invoker {
 	s := &server{
-		opt: internal_server.NewOptions(opts),
+		opt:  internal_server.NewOptions(opts),
+		svcs: newServices(),
 	}
 	s.init()
 	return &tInvoker{
@@ -58,8 +59,8 @@ func NewInvoker(opts ...Option) Invoker {
 
 // Init does initialization job for invoker.
 func (s *tInvoker) Init() (err error) {
-	if s.server.svcInfo == nil {
-		return errors.New("Run: no service. Use RegisterService to set one")
+	if len(s.server.svcs.svcMap) == 0 {
+		return errors.New("run: no service. Use RegisterService to set one")
 	}
 	s.initBasicRemoteOption()
 	// for server trans info handler

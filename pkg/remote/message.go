@@ -17,6 +17,7 @@
 package remote
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
@@ -51,13 +52,12 @@ const (
 	Oneway MessageType = 4
 
 	Stream MessageType = 5
+
+	Heartbeat MessageType = 6
 )
 
 const (
-	// TransInfoRecv2Send load by message tag,
-	// it is recorded during receive phase but will be the part of trans info to send out
-	TransInfoRecv2Send string = "transInfoRecv2Send"
-
+	// ReadFailed .
 	ReadFailed string = "RFailed"
 
 	// MeshHeader use in message.Tag to check MeshHeader
@@ -80,38 +80,30 @@ func NewProtocolInfo(tp transport.Protocol, ct serviceinfo.PayloadCodec) Protoco
 	}
 }
 
+// ServiceSearcher is used to search the service info by service name and method name,
+// strict equals to true means the service name must match the registered service name.
+type ServiceSearcher interface {
+	SearchService(svcName, methodName string, strict bool) *serviceinfo.ServiceInfo
+}
+
 // Message is the core abstraction for Kitex message.
 type Message interface {
 	RPCInfo() rpcinfo.RPCInfo
-
 	ServiceInfo() *serviceinfo.ServiceInfo
-
+	SpecifyServiceInfo(svcName, methodName string) (*serviceinfo.ServiceInfo, error)
 	Data() interface{}
-
 	NewData(method string) (ok bool)
-
 	MessageType() MessageType
-
 	SetMessageType(MessageType)
-
 	RPCRole() RPCRole
-
 	PayloadLen() int
-
 	SetPayloadLen(size int)
-
 	TransInfo() TransInfo
-
 	Tags() map[string]interface{}
-
 	ProtocolInfo() ProtocolInfo
-
 	SetProtocolInfo(ProtocolInfo)
-
 	PayloadCodec() PayloadCodec
-
 	SetPayloadCodec(pc PayloadCodec)
-
 	Recycle()
 }
 
@@ -120,7 +112,7 @@ func NewMessage(data interface{}, svcInfo *serviceinfo.ServiceInfo, ri rpcinfo.R
 	msg := messagePool.Get().(*message)
 	msg.data = data
 	msg.rpcInfo = ri
-	msg.svcInfo = svcInfo
+	msg.targetSvcInfo = svcInfo
 	msg.msgType = msgType
 	msg.rpcRole = rpcRole
 	msg.transInfo = transInfoPool.Get().(*transInfo)
@@ -128,10 +120,11 @@ func NewMessage(data interface{}, svcInfo *serviceinfo.ServiceInfo, ri rpcinfo.R
 }
 
 // NewMessageWithNewer creates a new Message and set data later.
-func NewMessageWithNewer(svcInfo *serviceinfo.ServiceInfo, ri rpcinfo.RPCInfo, msgType MessageType, rpcRole RPCRole) Message {
+func NewMessageWithNewer(targetSvcInfo *serviceinfo.ServiceInfo, svcSearcher ServiceSearcher, ri rpcinfo.RPCInfo, msgType MessageType, rpcRole RPCRole) Message {
 	msg := messagePool.Get().(*message)
 	msg.rpcInfo = ri
-	msg.svcInfo = svcInfo
+	msg.targetSvcInfo = targetSvcInfo
+	msg.svcSearcher = svcSearcher
 	msg.msgType = msgType
 	msg.rpcRole = rpcRole
 	msg.transInfo = transInfoPool.Get().(*transInfo)
@@ -150,24 +143,25 @@ func newMessage() interface{} {
 }
 
 type message struct {
-	msgType      MessageType
-	data         interface{}
-	rpcInfo      rpcinfo.RPCInfo
-	svcInfo      *serviceinfo.ServiceInfo
-	rpcRole      RPCRole
-	compressType CompressType
-	payloadSize  int
-	transInfo    TransInfo
-	tags         map[string]interface{}
-	protocol     ProtocolInfo
-	payloadCodec PayloadCodec
+	msgType       MessageType
+	data          interface{}
+	rpcInfo       rpcinfo.RPCInfo
+	targetSvcInfo *serviceinfo.ServiceInfo
+	svcSearcher   ServiceSearcher
+	rpcRole       RPCRole
+	compressType  CompressType
+	payloadSize   int
+	transInfo     TransInfo
+	tags          map[string]interface{}
+	protocol      ProtocolInfo
+	payloadCodec  PayloadCodec
 }
 
 func (m *message) zero() {
 	m.msgType = InvalidMessageType
 	m.data = nil
 	m.rpcInfo = nil
-	m.svcInfo = &emptyServiceInfo
+	m.targetSvcInfo = &emptyServiceInfo
 	m.rpcRole = -1
 	m.compressType = NoCompress
 	m.payloadSize = 0
@@ -188,7 +182,26 @@ func (m *message) RPCInfo() rpcinfo.RPCInfo {
 
 // ServiceInfo implements the Message interface.
 func (m *message) ServiceInfo() *serviceinfo.ServiceInfo {
-	return m.svcInfo
+	return m.targetSvcInfo
+}
+
+func (m *message) SpecifyServiceInfo(svcName, methodName string) (*serviceinfo.ServiceInfo, error) {
+	// for single service scenario
+	if m.targetSvcInfo != nil {
+		if mt := m.targetSvcInfo.MethodInfo(methodName); mt == nil {
+			return nil, NewTransErrorWithMsg(UnknownMethod, fmt.Sprintf("unknown method %s", methodName))
+		}
+		return m.targetSvcInfo, nil
+	}
+	svcInfo := m.svcSearcher.SearchService(svcName, methodName, false)
+	if svcInfo == nil {
+		return nil, NewTransErrorWithMsg(UnknownService, fmt.Sprintf("unknown service %s, method %s", svcName, methodName))
+	}
+	if _, ok := svcInfo.Methods[methodName]; !ok {
+		return nil, NewTransErrorWithMsg(UnknownMethod, fmt.Sprintf("unknown method %s (service %s)", methodName, svcName))
+	}
+	m.targetSvcInfo = svcInfo
+	return svcInfo, nil
 }
 
 // Data implements the Message interface.
@@ -201,7 +214,7 @@ func (m *message) NewData(method string) (ok bool) {
 	if m.data != nil {
 		return false
 	}
-	if mt := m.svcInfo.MethodInfo(method); mt != nil {
+	if mt := m.targetSvcInfo.MethodInfo(method); mt != nil {
 		m.data = mt.NewArgs()
 	}
 	if m.data == nil {
@@ -281,7 +294,10 @@ type TransInfo interface {
 }
 
 func newTransInfo() interface{} {
-	return &transInfo{}
+	return &transInfo{
+		intInfo: make(map[uint16]string),
+		strInfo: make(map[string]string),
+	}
 }
 
 type transInfo struct {
@@ -290,15 +306,16 @@ type transInfo struct {
 }
 
 func (ti *transInfo) zero() {
-	ti.intInfo = nil
-	ti.strInfo = nil
+	for k := range ti.intInfo {
+		delete(ti.intInfo, k)
+	}
+	for k := range ti.strInfo {
+		delete(ti.strInfo, k)
+	}
 }
 
 // TransIntInfo implements the TransInfo interface.
 func (ti *transInfo) TransIntInfo() map[uint16]string {
-	if ti.intInfo == nil {
-		ti.intInfo = make(map[uint16]string)
-	}
 	return ti.intInfo
 }
 
@@ -318,9 +335,6 @@ func (ti *transInfo) PutTransIntInfo(kvInfo map[uint16]string) {
 
 // TransStrInfo implements the TransInfo interface.
 func (ti *transInfo) TransStrInfo() map[string]string {
-	if ti.strInfo == nil {
-		ti.strInfo = make(map[string]string)
-	}
 	return ti.strInfo
 }
 
@@ -345,15 +359,7 @@ func (ti *transInfo) Recycle() {
 }
 
 // FillSendMsgFromRecvMsg is used to fill the transport information to the message to be sent.
-func FillSendMsgFromRecvMsg(recvMsg Message, sendMsg Message) {
+func FillSendMsgFromRecvMsg(recvMsg, sendMsg Message) {
 	sendMsg.SetProtocolInfo(recvMsg.ProtocolInfo())
 	sendMsg.SetPayloadCodec(recvMsg.PayloadCodec())
-
-	// Read transmissions recorded during the message phase
-	transInfoRecv2Send := recvMsg.Tags()[TransInfoRecv2Send]
-	if transInfoRecv2Send != nil {
-		if m, ok := transInfoRecv2Send.(map[string]string); ok {
-			sendMsg.TransInfo().PutTransStrInfo(m)
-		}
-	}
 }

@@ -18,24 +18,26 @@ package netpollmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync/atomic"
 
+	"github.com/cloudwego/gopkg/protocol/ttheader"
 	"github.com/cloudwego/netpoll"
 
-	stats2 "github.com/cloudwego/kitex/internal/stats"
 	"github.com/cloudwego/kitex/pkg/kerrors"
+	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/codec"
 	"github.com/cloudwego/kitex/pkg/remote/trans"
 	np "github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
+	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	"github.com/cloudwego/kitex/pkg/serviceinfo"
 	"github.com/cloudwego/kitex/pkg/stats"
 )
 
-type cliTransHandlerFactory struct {
-}
+type cliTransHandlerFactory struct{}
 
 // NewCliTransHandlerFactory creates a new netpollmux client transport handler factory.
 func NewCliTransHandlerFactory() remote.ClientTransHandlerFactory {
@@ -45,7 +47,7 @@ func NewCliTransHandlerFactory() remote.ClientTransHandlerFactory {
 // NewTransHandler implements the remote.ClientTransHandlerFactory interface.
 func (f *cliTransHandlerFactory) NewTransHandler(opt *remote.ClientOption) (remote.ClientTransHandler, error) {
 	if _, ok := opt.ConnPool.(*MuxPool); !ok {
-		return nil, fmt.Errorf("ConnPool[%T] invalid, netpoll mux just suppot MuxPool", opt.ConnPool)
+		return nil, fmt.Errorf("ConnPool[%T] invalid, netpoll mux just support MuxPool", opt.ConnPool)
 	}
 	return newCliTransHandler(opt)
 }
@@ -66,9 +68,9 @@ type cliTransHandler struct {
 }
 
 // Write implements the remote.ClientTransHandler interface.
-func (t *cliTransHandler) Write(ctx context.Context, conn net.Conn, sendMsg remote.Message) (err error) {
+func (t *cliTransHandler) Write(ctx context.Context, conn net.Conn, sendMsg remote.Message) (nctx context.Context, err error) {
 	ri := sendMsg.RPCInfo()
-	stats2.Record(ctx, ri, stats.WriteStart, nil)
+	rpcinfo.Record(ctx, ri, stats.WriteStart, nil)
 	buf := netpoll.NewLinkBuffer()
 	bufWriter := np.NewWriterByteBuffer(buf)
 	defer func() {
@@ -76,7 +78,7 @@ func (t *cliTransHandler) Write(ctx context.Context, conn net.Conn, sendMsg remo
 			buf.Close()
 			bufWriter.Release(err)
 		}
-		stats2.Record(ctx, ri, stats.WriteFinish, nil)
+		rpcinfo.Record(ctx, ri, stats.WriteFinish, nil)
 	}()
 
 	// Set header flag = 1
@@ -84,29 +86,27 @@ func (t *cliTransHandler) Write(ctx context.Context, conn net.Conn, sendMsg remo
 	if tags == nil {
 		tags = make(map[string]interface{})
 	}
-	tags[codec.HeaderFlagsKey] = codec.HeaderFlagSupportOutOfOrder
+	tags[codec.HeaderFlagsKey] = ttheader.HeaderFlagSupportOutOfOrder
 
 	// encode
+	sendMsg.SetPayloadCodec(t.opt.PayloadCodec)
 	err = t.codec.Encode(ctx, sendMsg, bufWriter)
 	if err != nil {
-		return err
+		return ctx, err
 	}
 
 	mc, _ := conn.(*muxCliConn)
-	if mc.logger == nil {
-		mc.logger = t.opt.Logger
-	}
 
 	// if oneway
 	var methodInfo serviceinfo.MethodInfo
 	if methodInfo, err = trans.GetMethodInfo(ri, sendMsg.ServiceInfo()); err != nil {
-		return err
+		return ctx, err
 	}
 	if methodInfo.OneWay() {
-		mc.Put(func() (buf remote.ByteBuffer, isNil bool) {
-			return bufWriter, false
+		mc.Put(func() (_ netpoll.Writer, isNil bool) {
+			return buf, false
 		})
-		return nil
+		return ctx, nil
 	}
 
 	// add notify
@@ -114,11 +114,11 @@ func (t *cliTransHandler) Write(ctx context.Context, conn net.Conn, sendMsg remo
 	callback := newAsyncCallback(buf, bufWriter)
 	mc.seqIDMap.store(seqID, callback)
 	mc.Put(callback.getter)
-	return err
+	return ctx, err
 }
 
 // Read implements the remote.ClientTransHandler interface.
-func (t *cliTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (err error) {
+func (t *cliTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Message) (nctx context.Context, err error) {
 	ri := msg.RPCInfo()
 	mc, _ := conn.(*muxCliConn)
 	seqID := ri.Invocation().SeqID()
@@ -129,28 +129,40 @@ func (t *cliTransHandler) Read(ctx context.Context, conn net.Conn, msg remote.Me
 	callback, _ := event.(*asyncCallback)
 	defer callback.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, trans.GetReadTimeout(ri.Config()))
-	defer cancel()
+	readTimeout := trans.GetReadTimeout(ri.Config())
+	if readTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, readTimeout)
+		defer cancel()
+	}
 	select {
 	case <-ctx.Done():
 		// timeout
-		return fmt.Errorf("recv wait timeout %s, seqID=%d", msg.RPCInfo().Config().ReadWriteTimeout().String(), seqID)
-	case err := <-callback.notifyChan:
+		return ctx, fmt.Errorf("recv wait timeout %s, seqID=%d", readTimeout, seqID)
+	case bufReader := <-callback.notifyChan:
 		// recv
-		if err != nil {
-			return err
+		if bufReader == nil {
+			return ctx, ErrConnClosed
 		}
-		stats2.Record(ctx, ri, stats.ReadStart, nil)
-		err = t.codec.Decode(ctx, msg, callback.bufReader)
-		stats2.Record(ctx, ri, stats.ReadFinish, err)
-		return err
+		rpcinfo.Record(ctx, ri, stats.ReadStart, nil)
+		msg.SetPayloadCodec(t.opt.PayloadCodec)
+		err := t.codec.Decode(ctx, msg, bufReader)
+		if err != nil && errors.Is(err, netpoll.ErrReadTimeout) {
+			err = kerrors.ErrRPCTimeout.WithCause(err)
+		}
+		if l := bufReader.ReadableLen(); l > 0 {
+			bufReader.Skip(l)
+		}
+		bufReader.Release(nil)
+		rpcinfo.Record(ctx, ri, stats.ReadFinish, err)
+		return ctx, err
 	}
 }
 
 // OnMessage implements the remote.ClientTransHandler interface.
-func (t *cliTransHandler) OnMessage(ctx context.Context, args, result remote.Message) error {
+func (t *cliTransHandler) OnMessage(ctx context.Context, args, result remote.Message) (context.Context, error) {
 	// do nothing
-	return nil
+	return ctx, nil
 }
 
 // OnInactive implements the remote.ClientTransHandler interface.
@@ -161,9 +173,9 @@ func (t *cliTransHandler) OnInactive(ctx context.Context, conn net.Conn) {
 // OnError implements the remote.ClientTransHandler interface.
 func (t *cliTransHandler) OnError(ctx context.Context, err error, conn net.Conn) {
 	if pe, ok := err.(*kerrors.DetailedError); ok {
-		t.opt.Logger.Errorf("KITEX: send request error, remote=%s, err=%s\n%s", conn.RemoteAddr(), err.Error(), pe.Stack())
+		klog.CtxErrorf(ctx, "KITEX: send request error, remote=%s, error=%s\nstack=%s", conn.RemoteAddr(), err.Error(), pe.Stack())
 	} else {
-		t.opt.Logger.Errorf("KITEX: send request error, remote=%s, err=%s", conn.RemoteAddr(), err.Error())
+		klog.CtxErrorf(ctx, "KITEX: send request error, remote=%s, error=%s", conn.RemoteAddr(), err.Error())
 	}
 }
 
@@ -175,23 +187,21 @@ func (t *cliTransHandler) SetPipeline(p *remote.TransPipeline) {
 type asyncCallback struct {
 	wbuf       *netpoll.LinkBuffer
 	bufWriter  remote.ByteBuffer
-	bufReader  remote.ByteBuffer
-	notifyChan chan error
-	closed     int32 // 1 is closed, 2 means wbuf has been flush
+	notifyChan chan remote.ByteBuffer // notify recv reader
+	closed     int32                  // 1 is closed, 2 means wbuf has been flush
 }
 
 func newAsyncCallback(wbuf *netpoll.LinkBuffer, bufWriter remote.ByteBuffer) *asyncCallback {
 	return &asyncCallback{
 		wbuf:       wbuf,
 		bufWriter:  bufWriter,
-		notifyChan: make(chan error, 1),
+		notifyChan: make(chan remote.ByteBuffer, 1),
 	}
 }
 
 // Recv is called when receive a message.
 func (c *asyncCallback) Recv(bufReader remote.ByteBuffer, err error) error {
-	c.bufReader = bufReader
-	c.notify(err)
+	c.notify(bufReader)
 	return nil
 }
 
@@ -201,25 +211,22 @@ func (c *asyncCallback) Close() error {
 		c.wbuf.Close()
 		c.bufWriter.Release(nil)
 	}
-	if c.bufReader != nil {
-		if l := c.bufReader.ReadableLen(); l > 0 {
-			c.bufReader.Skip(l)
-		}
-		c.bufReader.Release(nil)
-	}
 	return nil
 }
 
-func (c *asyncCallback) notify(err error) {
+func (c *asyncCallback) notify(bufReader remote.ByteBuffer) {
 	select {
-	case c.notifyChan <- err:
+	case c.notifyChan <- bufReader:
 	default:
+		if bufReader != nil {
+			bufReader.Release(nil)
+		}
 	}
 }
 
-func (c *asyncCallback) getter() (w remote.ByteBuffer, isNil bool) {
+func (c *asyncCallback) getter() (w netpoll.Writer, isNil bool) {
 	if atomic.CompareAndSwapInt32(&c.closed, 0, 2) {
-		return c.bufWriter, false
+		return c.wbuf, false
 	}
 	return nil, true
 }

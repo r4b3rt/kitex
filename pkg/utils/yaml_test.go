@@ -18,6 +18,7 @@ package utils
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -28,9 +29,7 @@ const (
 	TestYamlFile = "/tmp/test.yaml"
 )
 
-var (
-	cfg *YamlConfig
-)
+var cfg *YamlConfig
 
 func createTestYamlFile(t *testing.T, path string) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.ModePerm)
@@ -85,14 +84,18 @@ func deleteTestYamlFile(t *testing.T, path string) {
 	}
 }
 
-func init() {
+func TestMain(m *testing.M) {
+	if runtime.GOOS == "windows" {
+		return
+	}
 	t := &testing.T{}
 	createTestYamlFile(t, TestYamlFile)
-	defer func() {
-		deleteTestYamlFile(t, TestYamlFile)
-	}()
 
 	cfg, _ = ReadYamlConfigFile(TestYamlFile)
+
+	exit := m.Run()
+	deleteTestYamlFile(t, TestYamlFile)
+	os.Exit(exit)
 }
 
 func Test_ReadYamlConfigFile(t *testing.T) {
@@ -193,7 +196,7 @@ func TestYamlConfig_GetFloat(t *testing.T) {
 func TestYamlConfig_GetDuration(t *testing.T) {
 	// duration
 	val, ok := cfg.GetDuration("ExitWaitTimeout")
-	test.Assert(t, ok && val == time.Duration(time.Millisecond*123))
+	test.Assert(t, ok && val == time.Millisecond*123)
 
 	// not duration
 	_, ok = cfg.GetDuration("EnableMetrics")

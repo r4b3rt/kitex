@@ -36,12 +36,10 @@ func TestDefaultByteBuffer(t *testing.T) {
 	checkUnreadable(t, buf3)
 
 	buf4 := NewReaderWriterBuffer(-1)
-	b, err := buf3.Bytes()
+	_, err := buf3.Bytes()
 	test.Assert(t, err == nil, err)
-	var n int
-	n, err = buf4.AppendBuffer(buf3)
+	err = buf4.AppendBuffer(buf3)
 	test.Assert(t, err == nil)
-	test.Assert(t, n == len(b))
 	checkReadable(t, buf4)
 }
 
@@ -66,7 +64,7 @@ func checkWritable(t *testing.T, buf ByteBuffer) {
 	test.Assert(t, err == nil, err)
 	test.Assert(t, len(p) == len(msg))
 	copy(p, msg)
-	l := buf.MallocLen()
+	l := buf.WrittenLen()
 	test.Assert(t, l == len(msg))
 	l, err = buf.WriteString(msg)
 	test.Assert(t, err == nil, err)
@@ -108,7 +106,8 @@ func checkReadable(t *testing.T, buf ByteBuffer) {
 	s, err = buf.ReadString(len(msg))
 	test.Assert(t, err == nil, err)
 	test.Assert(t, s == msg)
-	p, err = buf.ReadBinary(len(msg))
+	p = make([]byte, len(msg))
+	_, err = buf.ReadBinary(p)
 	test.Assert(t, err == nil, err)
 	test.Assert(t, string(p) == msg)
 	p = make([]byte, len(msg))
@@ -122,7 +121,7 @@ func checkUnwritable(t *testing.T, buf ByteBuffer) {
 	msg := "hello world"
 	_, err := buf.Malloc(len(msg))
 	test.Assert(t, err != nil)
-	l := buf.MallocLen()
+	l := buf.WrittenLen()
 	test.Assert(t, l == -1, l)
 	_, err = buf.WriteString(msg)
 	test.Assert(t, err != nil)
@@ -150,7 +149,8 @@ func checkUnreadable(t *testing.T, buf ByteBuffer) {
 	test.Assert(t, n == 0)
 	_, err = buf.ReadString(len(msg))
 	test.Assert(t, err != nil)
-	_, err = buf.ReadBinary(len(msg))
+	b := make([]byte, len(msg))
+	_, err = buf.ReadBinary(b)
 	test.Assert(t, err != nil)
 	p := make([]byte, len(msg))
 	n, err = buf.Read(p)

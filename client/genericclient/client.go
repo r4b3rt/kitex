@@ -19,6 +19,7 @@ package genericclient
 
 import (
 	"context"
+	"runtime"
 
 	"github.com/cloudwego/kitex/client"
 	"github.com/cloudwego/kitex/client/callopt"
@@ -26,55 +27,97 @@ import (
 	"github.com/cloudwego/kitex/pkg/serviceinfo"
 )
 
+var _ Client = &genericServiceClient{}
+
 // NewClient create a generic client
-func NewClient(psm string, g generic.Generic, opts ...client.Option) (Client, error) {
-	svcInfo := generic.ServiceInfo(g.PayloadCodecType())
-	return NewClientWithServiceInfo(psm, g, svcInfo, opts...)
+func NewClient(destService string, g generic.Generic, opts ...client.Option) (Client, error) {
+	svcInfo := generic.ServiceInfoWithGeneric(g)
+	return NewClientWithServiceInfo(destService, g, svcInfo, opts...)
 }
 
 // NewClientWithServiceInfo create a generic client with serviceInfo
-func NewClientWithServiceInfo(psm string, g generic.Generic, svcInfo *serviceinfo.ServiceInfo, opts ...client.Option) (Client, error) {
+func NewClientWithServiceInfo(destService string, g generic.Generic, svcInfo *serviceinfo.ServiceInfo, opts ...client.Option) (Client, error) {
 	var options []client.Option
 	options = append(options, client.WithGeneric(g))
-	options = append(options, client.WithDestService(psm))
+	options = append(options, client.WithDestService(destService))
 	options = append(options, opts...)
 
 	kc, err := client.NewClient(svcInfo, options...)
 	if err != nil {
 		return nil, err
 	}
-	return &genericServiceClient{
+	cli := &genericServiceClient{
+		svcInfo: svcInfo,
 		kClient: kc,
 		g:       g,
-	}, nil
+	}
+	runtime.SetFinalizer(cli, (*genericServiceClient).Close)
+
+	svcInfo.GenericMethod = func(name string) serviceinfo.MethodInfo {
+		m := svcInfo.Methods[serviceinfo.GenericMethod]
+		n, err := g.GetMethod(nil, name)
+		if err != nil {
+			return m
+		}
+		return &methodInfo{
+			MethodInfo: m,
+			oneway:     n.Oneway,
+		}
+	}
+
+	return cli, nil
+}
+
+// methodInfo is a wrapper to update the oneway flag of a service.MethodInfo.
+type methodInfo struct {
+	serviceinfo.MethodInfo
+	oneway bool
+}
+
+func (m *methodInfo) OneWay() bool {
+	return m.oneway
 }
 
 // Client generic client
 type Client interface {
+	generic.Closer
+
 	// GenericCall generic call
 	GenericCall(ctx context.Context, method string, request interface{}, callOptions ...callopt.Option) (response interface{}, err error)
 }
 
 type genericServiceClient struct {
+	svcInfo *serviceinfo.ServiceInfo
 	kClient client.Client
 	g       generic.Generic
 }
 
 func (gc *genericServiceClient) GenericCall(ctx context.Context, method string, request interface{}, callOptions ...callopt.Option) (response interface{}, err error) {
 	ctx = client.NewCtxWithCallOptions(ctx, callOptions)
-	var _args generic.Args
+	mtInfo := gc.svcInfo.MethodInfo(method)
+	_args := mtInfo.NewArgs().(*generic.Args)
 	_args.Method = method
 	_args.Request = request
+
 	mt, err := gc.g.GetMethod(request, method)
 	if err != nil {
 		return nil, err
 	}
 	if mt.Oneway {
-		return nil, gc.kClient.Call(ctx, mt.Name, &_args, nil)
+		return nil, gc.kClient.Call(ctx, mt.Name, _args, nil)
 	}
-	var _result generic.Result
-	if err = gc.kClient.Call(ctx, mt.Name, &_args, &_result); err != nil {
+
+	_result := mtInfo.NewResult().(*generic.Result)
+	if err = gc.kClient.Call(ctx, mt.Name, _args, _result); err != nil {
 		return
 	}
 	return _result.GetSuccess(), nil
+}
+
+func (gc *genericServiceClient) Close() error {
+	// no need a finalizer anymore
+	runtime.SetFinalizer(gc, nil)
+
+	// Notice: don't need to close kClient because finalizer will close it.
+	return gc.g.Close()
 }

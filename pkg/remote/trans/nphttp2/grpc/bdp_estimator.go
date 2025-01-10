@@ -15,7 +15,7 @@
  * limitations under the License.
  *
  * This file may have been modified by CloudWeGo authors. All CloudWeGo
- * Modifications are Copyright 2021 CloudWeGo Authors authors.
+ * Modifications are Copyright 2021 CloudWeGo Authors.
  */
 
 package grpc
@@ -48,6 +48,9 @@ const (
 // Easter-egg: what does the ping message say?
 var bdpPing = &ping{data: [8]byte{2, 4, 16, 16, 9, 14, 7, 7}}
 
+// allow only one bdpPing per bdpPingInterval
+var bdpPingInterval = time.Second
+
 type bdpEstimator struct {
 	// sentAt is the time when the ping was sent.
 	sentAt time.Time
@@ -77,7 +80,11 @@ func (b *bdpEstimator) timesnap(d [8]byte) {
 	if bdpPing.data != d {
 		return
 	}
+	// Locking here is to avoid DATA RACE in the unittest.
+	// In fact, it would not bring the concurrency problem.
+	b.mu.Lock()
 	b.sentAt = time.Now()
+	b.mu.Unlock()
 }
 
 // add adds bytes to the current sample for calculating bdp.
@@ -90,7 +97,7 @@ func (b *bdpEstimator) add(n uint32) bool {
 	if b.bdp == bdpLimit {
 		return false
 	}
-	if !b.isSent {
+	if !b.isSent && time.Since(b.sentAt) >= bdpPingInterval {
 		b.isSent = true
 		b.sample = n
 		b.sentAt = time.Time{}

@@ -19,107 +19,61 @@ package rpctimeout
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudwego/kitex/pkg/endpoint"
-	"github.com/cloudwego/kitex/pkg/gofunc"
-	"github.com/cloudwego/kitex/pkg/kerrors"
-	"github.com/cloudwego/kitex/pkg/klog"
-	"github.com/cloudwego/kitex/pkg/rpcinfo"
 )
 
-func recoverFunc(ctx context.Context, logger klog.FormatLogger, ri rpcinfo.RPCInfo, done chan error) {
-	if err := recover(); err != nil {
-		e := fmt.Errorf("KITEX: panic, remote[to_psm=%s|method=%s], err=%v\n%s",
-			ri.To().ServiceName(), ri.To().Method(), err, debug.Stack())
-		if l, ok := logger.(klog.CtxLogger); ok {
-			l.CtxErrorf(ctx, "%s", e.Error())
-		} else {
-			logger.Errorf("%s", e.Error())
-		}
-		rpcStats := rpcinfo.AsMutableRPCStats(ri.Stats())
-		rpcStats.SetPanicked(err)
-		done <- e
-	}
-	close(done)
-}
+type timeoutAdjustKeyType int
+
+// TimeoutAdjustKey is used to adjust the timeout of RPC timeout middleware.
+// Deprecated: this value is kept for historical reason and compatibility.
+// It should not be used anymore.
+const TimeoutAdjustKey timeoutAdjustKeyType = 1
 
 // MiddlewareBuilder builds timeout middleware.
+// Deprecated: this method is kept for historical reason and compatibility.
+// It should not be used anymore.
 func MiddlewareBuilder(moreTimeout time.Duration) endpoint.MiddlewareBuilder {
 	return func(mwCtx context.Context) endpoint.Middleware {
-		logger := mwCtx.Value(endpoint.CtxLoggerKey).(klog.FormatLogger)
-		return func(next endpoint.Endpoint) endpoint.Endpoint {
-			return func(ctx context.Context, request, response interface{}) error {
-				var err error
-				ri := rpcinfo.GetRPCInfo(ctx)
-				tm := ri.Config().RPCTimeout() + moreTimeout
-
-				start := time.Now()
-				ctx, cancel := context.WithTimeout(ctx, tm)
-				defer cancel()
-
-				done := make(chan error, 1)
-				gofunc.GoFunc(ctx, func() {
-					defer recoverFunc(ctx, logger, ri, done)
-					err = next(ctx, request, response)
-					if err != nil && ctx.Err() != nil {
-						// error occurs after the wait goroutine returns,
-						// we should log this error or it will be discarded.
-						var errMsg string
-						if ri.To().Address() != nil {
-							errMsg = fmt.Sprintf("KITEX: remote[to_psm=%s|method=%s|addr=%s]，err=%s",
-								ri.To().ServiceName(), ri.To().Method(), ri.To().Address(), err.Error())
-						} else {
-							errMsg = fmt.Sprintf("KITEX: remote[to_psm=%s|method=%s], err=%s",
-								ri.To().ServiceName(), ri.To().Method(), err.Error())
-						}
-						if l, ok := logger.(klog.CtxLogger); ok {
-							l.CtxErrorf(ctx, "%s", errMsg)
-						} else {
-							logger.Errorf("%s", errMsg)
-						}
-					}
-				})
-
-				select {
-				case panicErr := <-done:
-					if panicErr != nil {
-						return panicErr
-					}
-					return err
-				case <-ctx.Done():
-					return makeTimeoutErr(ctx, start)
-				}
-			}
+		if p, ok := mwCtx.Value(TimeoutAdjustKey).(*time.Duration); ok {
+			*p = moreTimeout
 		}
+		return endpoint.DummyMiddleware
 	}
 }
 
-func makeTimeoutErr(ctx context.Context, start time.Time) error {
-	ri := rpcinfo.GetRPCInfo(ctx)
-	to := ri.To()
-	timeout := ri.Config().RPCTimeout()
+// Controls whether `rpcTimeoutMW` should separate ErrRPCTimeout into different errors according to causes.
+// Since atomic.Bool is available only since go1.19, use int32 instead.
+var globalNeedFineGrainedErrCode int32 = 0
 
-	errMsg := fmt.Sprintf("timeout=%v, to=%s, method=%s", timeout, to.ServiceName(), to.Method())
-	target := to.Address()
-	if target != nil {
-		errMsg = fmt.Sprintf("%s, remote=%s", errMsg, target.String())
-	}
+// EnableGlobalNeedFineGrainedErrCode can be used to set global flag, which applies to all clients.
+func EnableGlobalNeedFineGrainedErrCode() {
+	atomic.StoreInt32(&globalNeedFineGrainedErrCode, 1)
+}
 
-	// cancel error
-	if ctx.Err() == context.Canceled {
-		return kerrors.ErrRPCTimeout.WithCause(fmt.Errorf("%s: %w", errMsg, ctx.Err()))
-	}
+// DisableGlobalNeedFineGrainedErrCode can be used to revert the flag, which is useful in tests.
+func DisableGlobalNeedFineGrainedErrCode() {
+	atomic.StoreInt32(&globalNeedFineGrainedErrCode, 0)
+}
 
-	if ddl, ok := ctx.Deadline(); !ok {
-		errMsg = fmt.Sprintf("%s, %s", errMsg, "unknown error: context deadline not set?")
-	} else {
-		if ddl.Before(start.Add(timeout)) {
-			errMsg = fmt.Sprintf("%s, context deadline earlier than timeout, actual=%v", errMsg, ddl.Sub(start))
-		}
-	}
-	return kerrors.ErrRPCTimeout.WithCause(errors.New(errMsg))
+// LoadGlobalNeedFineGrainedErrCode is used to load the flag, and return a bool value.
+func LoadGlobalNeedFineGrainedErrCode() bool {
+	return atomic.LoadInt32(&globalNeedFineGrainedErrCode) == 1
+}
+
+// defaultBusinessTimeoutThreshold is used to determine whether a timeout is set by kitex or business.
+// If actual DDL + threshold <  Kitex's expected DDL, it's more likely to be set by business code.
+var defaultBusinessTimeoutThreshold = time.Millisecond * 50
+
+// SetBusinessTimeoutThreshold sets the threshold for business timeout.
+func SetBusinessTimeoutThreshold(t time.Duration) {
+	defaultBusinessTimeoutThreshold = t
+}
+
+// LoadBusinessTimeoutThreshold is used the load the threshold, and keeps compatibility if in the future
+// there's need for business code to modify the value.
+func LoadBusinessTimeoutThreshold() time.Duration {
+	return defaultBusinessTimeoutThreshold
 }

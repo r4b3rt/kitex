@@ -17,8 +17,6 @@
 package protobuf
 
 import (
-	"fmt"
-
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,7 +31,7 @@ type pbError struct {
 	errProto *ErrorProto
 }
 
-func newPbError(typeID int32, message string) PBError {
+func NewPbError(typeID int32, message string) PBError {
 	err := &ErrorProto{TypeID: typeID, Message: message}
 	return &pbError{errProto: err}
 }
@@ -48,7 +46,7 @@ func (p *pbError) IsSetError() bool {
 
 func (p *pbError) Marshal(out []byte) ([]byte, error) {
 	if !p.IsSetError() {
-		return out, fmt.Errorf("no errProto in pbError")
+		return out, nil
 	}
 	return proto.Marshal(p.errProto)
 }

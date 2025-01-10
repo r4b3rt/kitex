@@ -23,16 +23,12 @@ import (
 	"github.com/cloudwego/kitex/pkg/serviceinfo"
 )
 
-var (
-	payloadCodecs = make(map[serviceinfo.PayloadCodec]PayloadCodec)
-)
+var payloadCodecs = make(map[serviceinfo.PayloadCodec]PayloadCodec)
 
 // PayloadCodec is used to marshal and unmarshal payload.
 type PayloadCodec interface {
 	Marshal(ctx context.Context, message Message, out ByteBuffer) error
-
 	Unmarshal(ctx context.Context, message Message, in ByteBuffer) error
-
 	Name() string
 }
 

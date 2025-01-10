@@ -18,7 +18,7 @@ package protobuf
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -31,12 +31,15 @@ import (
 	"github.com/cloudwego/kitex/transport"
 )
 
-var payloadCodec = &protobufCodec{}
-var svcInfo = mocks.ServiceInfo()
+var (
+	payloadCodec = &protobufCodec{}
+	svcInfo      = mocks.ServiceInfo()
+)
 
 func init() {
 	svcInfo.Methods["mock"] = serviceinfo.NewMethodInfo(nil, newMockReqArgs, nil, false)
 }
+
 func TestNormal(t *testing.T) {
 	ctx := context.Background()
 
@@ -47,7 +50,7 @@ func TestNormal(t *testing.T) {
 	test.Assert(t, err == nil, err)
 
 	// decode server side
-	var recvMsg = initRecvMsg()
+	recvMsg := initRecvMsg()
 	buf, err := out.Bytes()
 	recvMsg.SetPayloadLen(len(buf))
 	test.Assert(t, err == nil, err)
@@ -82,18 +85,32 @@ func TestException(t *testing.T) {
 	test.Assert(t, err == nil, err)
 
 	// decode client side
-	var recvMsg = initClientRecvMsg(ri)
+	recvMsg := initClientRecvMsg(ri)
 	buf, err := out.Bytes()
 	recvMsg.SetPayloadLen(len(buf))
 	test.Assert(t, err == nil, err)
 	in := remote.NewReaderBuffer(buf)
 	err = payloadCodec.Unmarshal(ctx, recvMsg, in)
 	test.Assert(t, err != nil)
-	pbErr, ok := err.(*pbError)
+	transErr, ok := err.(*remote.TransError)
 	test.Assert(t, ok)
 	test.Assert(t, err.Error() == errInfo)
-	test.Assert(t, pbErr.errProto.Message == errInfo)
-	test.Assert(t, pbErr.errProto.TypeID == remote.UnknownMethod)
+	test.Assert(t, transErr.Error() == errInfo)
+	test.Assert(t, transErr.TypeID() == remote.UnknownMethod)
+}
+
+func TestTransErrorUnwrap(t *testing.T) {
+	errMsg := "mock err"
+	transErr := remote.NewTransError(remote.InternalError, NewPbError(1000, errMsg))
+	uwErr, ok := transErr.Unwrap().(PBError)
+	test.Assert(t, ok)
+	test.Assert(t, uwErr.TypeID() == 1000)
+	test.Assert(t, transErr.Error() == errMsg)
+
+	uwErr2, ok := errors.Unwrap(transErr).(PBError)
+	test.Assert(t, ok)
+	test.Assert(t, uwErr2.TypeID() == 1000)
+	test.Assert(t, uwErr2.Error() == errMsg)
 }
 
 func BenchmarkNormalParallel(b *testing.B) {
@@ -109,7 +126,7 @@ func BenchmarkNormalParallel(b *testing.B) {
 			test.Assert(b, err == nil, err)
 
 			// decode server side
-			var recvMsg = initRecvMsg()
+			recvMsg := initRecvMsg()
 			buf, err := out.Bytes()
 			recvMsg.SetPayloadLen(len(buf))
 			test.Assert(b, err == nil, err)
@@ -138,7 +155,7 @@ func initSendMsg(tp transport.Protocol) remote.Message {
 	_args.Req = prepareReq()
 	ink := rpcinfo.NewInvocation("", "mock")
 	ri := rpcinfo.NewRPCInfo(nil, nil, ink, nil, nil)
-	var msg = remote.NewMessage(&_args, svcInfo, ri, remote.Call, remote.Client)
+	msg := remote.NewMessage(&_args, svcInfo, ri, remote.Call, remote.Client)
 	msg.SetProtocolInfo(remote.NewProtocolInfo(tp, svcInfo.PayloadCodec))
 	return msg
 }
@@ -151,7 +168,7 @@ func initRecvMsg() remote.Message {
 	return msg
 }
 
-func initServerErrorMsg(tp transport.Protocol, ri rpcinfo.RPCInfo, transErr remote.TransError) remote.Message {
+func initServerErrorMsg(tp transport.Protocol, ri rpcinfo.RPCInfo, transErr *remote.TransError) remote.Message {
 	errMsg := remote.NewMessage(transErr, svcInfo, ri, remote.Exception, remote.Server)
 	errMsg.SetProtocolInfo(remote.NewProtocolInfo(tp, svcInfo.PayloadCodec))
 	return errMsg
@@ -164,7 +181,7 @@ func initClientRecvMsg(ri rpcinfo.RPCInfo) remote.Message {
 }
 
 func prepareReq() *MockReq {
-	var strMap = make(map[string]string)
+	strMap := make(map[string]string)
 	strMap["key1"] = "val1"
 	strMap["key2"] = "val2"
 	strList := []string{"str1", "str2"}
@@ -186,7 +203,7 @@ type MockReqArgs struct {
 
 func (p *MockReqArgs) Marshal(out []byte) ([]byte, error) {
 	if !p.IsSetReq() {
-		return out, fmt.Errorf("No req in MockReqArgs")
+		return out, nil
 	}
 	return proto.Marshal(p.Req)
 }

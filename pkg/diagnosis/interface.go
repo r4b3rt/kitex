@@ -31,13 +31,21 @@ type Service interface {
 	RegisterProbeFunc(ProbeName, ProbeFunc)
 }
 
+// RegisterProbeFunc is a wrap function to execute Service.RegisterProbeFunc.
+func RegisterProbeFunc(svc Service, name ProbeName, pf ProbeFunc) {
+	if svc != nil {
+		svc.RegisterProbeFunc(name, pf)
+	}
+}
+
 // Keys below are probe info that has been registered by default.
 // If you want to register other info, please use RegisterProbeFunc(ProbeName, ProbeFunc) to do that.
 const (
 	// Common
-	ChangeEventsKey ProbeName = "events"
-	ServiceInfoKey  ProbeName = "service_info"
-	OptionsKey      ProbeName = "options"
+	ChangeEventsKey    ProbeName = "events"
+	ServiceInfosKey    ProbeName = "service_infos"
+	FallbackServiceKey ProbeName = "fallback_service"
+	OptionsKey         ProbeName = "options"
 
 	// Client
 	DestServiceKey ProbeName = "dest_service"
@@ -52,7 +60,7 @@ func WrapAsProbeFunc(data interface{}) ProbeFunc {
 	}
 }
 
-// NoopService is a empty implementation of Service.
+// NoopService is an empty implementation of Service.
 // If you need diagnosis feature, specify Service through the option WithDiagnosisService of client and server.
 var NoopService Service = &noopService{}
 
