@@ -22,26 +22,20 @@ import (
 )
 
 // BoundHandler is used to abstract the bound handler.
-type BoundHandler interface {
-}
+type BoundHandler interface{}
 
 // OutboundHandler is used to process write event.
 type OutboundHandler interface {
 	BoundHandler
-
 	Write(ctx context.Context, conn net.Conn, send Message) (context.Context, error)
 }
 
 // InboundHandler is used to process read event.
 type InboundHandler interface {
 	BoundHandler
-
 	OnActive(ctx context.Context, conn net.Conn) (context.Context, error)
-
 	OnInactive(ctx context.Context, conn net.Conn) context.Context
-
 	OnRead(ctx context.Context, conn net.Conn) (context.Context, error)
-
 	OnMessage(ctx context.Context, args, result Message) (context.Context, error)
 }
 
@@ -59,8 +53,10 @@ type TransPipeline struct {
 	outboundHdrls []OutboundHandler
 }
 
-var _ TransHandler = &TransPipeline{}
-var _ ServerTransHandler = &TransPipeline{}
+var (
+	_ TransHandler       = &TransPipeline{}
+	_ ServerTransHandler = &TransPipeline{}
+)
 
 func newTransPipeline() *TransPipeline {
 	return &TransPipeline{}
@@ -87,12 +83,11 @@ func (p *TransPipeline) AddOutboundHandler(hdlr OutboundHandler) *TransPipeline 
 }
 
 // Write implements the OutboundHandler interface.
-func (p *TransPipeline) Write(ctx context.Context, conn net.Conn, sendMsg Message) error {
-	var err error
+func (p *TransPipeline) Write(ctx context.Context, conn net.Conn, sendMsg Message) (nctx context.Context, err error) {
 	for _, h := range p.outboundHdrls {
 		ctx, err = h.Write(ctx, conn, sendMsg)
 		if err != nil {
-			return err
+			return ctx, err
 		}
 	}
 	return p.netHdlr.Write(ctx, conn, sendMsg)
@@ -137,7 +132,7 @@ func (p *TransPipeline) OnRead(ctx context.Context, conn net.Conn) error {
 }
 
 // Read reads from conn.
-func (p *TransPipeline) Read(ctx context.Context, conn net.Conn, msg Message) error {
+func (p *TransPipeline) Read(ctx context.Context, conn net.Conn, msg Message) (nctx context.Context, err error) {
 	return p.netHdlr.Read(ctx, conn, msg)
 }
 
@@ -147,16 +142,16 @@ func (p *TransPipeline) OnError(ctx context.Context, err error, conn net.Conn) {
 }
 
 // OnMessage implements the InboundHandler interface.
-func (p *TransPipeline) OnMessage(ctx context.Context, args, result Message) error {
+func (p *TransPipeline) OnMessage(ctx context.Context, args, result Message) (context.Context, error) {
 	var err error
 	for _, h := range p.inboundHdrls {
 		ctx, err = h.OnMessage(ctx, args, result)
 		if err != nil {
-			return err
+			return ctx, err
 		}
 	}
 	if result.MessageType() == Exception {
-		return nil
+		return ctx, nil
 	}
 	return p.netHdlr.OnMessage(ctx, args, result)
 }
@@ -164,4 +159,12 @@ func (p *TransPipeline) OnMessage(ctx context.Context, args, result Message) err
 // SetPipeline does nothing now.
 func (p *TransPipeline) SetPipeline(transPipe *TransPipeline) {
 	// do nothing
+}
+
+// GracefulShutdown implements the GracefulShutdown interface.
+func (p *TransPipeline) GracefulShutdown(ctx context.Context) error {
+	if g, ok := p.netHdlr.(GracefulShutdown); ok {
+		return g.GracefulShutdown(ctx)
+	}
+	return nil
 }

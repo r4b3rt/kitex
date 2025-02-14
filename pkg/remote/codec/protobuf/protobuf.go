@@ -21,9 +21,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cloudwego/fastpb"
+
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/codec"
 	"github.com/cloudwego/kitex/pkg/remote/codec/perrors"
+	"github.com/cloudwego/kitex/pkg/serviceinfo"
 )
 
 /**
@@ -48,9 +51,14 @@ func NewProtobufCodec() remote.PayloadCodec {
 	return &protobufCodec{}
 }
 
-// protobufCodec implements  PayloadMarshaler
-type protobufCodec struct {
+// IsProtobufCodec checks if the codec is protobufCodec
+func IsProtobufCodec(c remote.PayloadCodec) bool {
+	_, ok := c.(*protobufCodec)
+	return ok
 }
+
+// protobufCodec implements  PayloadMarshaler
+type protobufCodec struct{}
 
 // Len encode outside not here
 func (c protobufCodec) Marshal(ctx context.Context, message remote.Message, out remote.ByteBuffer) error {
@@ -62,17 +70,6 @@ func (c protobufCodec) Marshal(ctx context.Context, message remote.Message, out 
 	data, err := getValidData(methodName, message)
 	if err != nil {
 		return err
-	}
-	msg, ok := data.(protobufMsgCodec)
-	if !ok {
-		return remote.NewTransErrorWithMsg(remote.InvalidProtocol, "encode failed, codec msg type not match with protobufCodec")
-	}
-
-	// 2. encode pb struct
-	// TODO 传入预分配的buf可以减少buf扩容
-	var actualMsgBuf []byte
-	if actualMsgBuf, err = msg.Marshal(actualMsgBuf); err != nil {
-		return perrors.NewProtocolErrorWithErrMsg(err, fmt.Sprintf("protobuf marshal message failed: %s", err.Error()))
 	}
 
 	// 3. encode metainfo
@@ -90,6 +87,45 @@ func (c protobufCodec) Marshal(ctx context.Context, message remote.Message, out 
 	}
 
 	// 4. write actual message buf
+	msg, ok := data.(ProtobufMsgCodec)
+	if !ok {
+		// Generic Case
+		genmsg, isgen := data.(MessageWriterWithContext)
+		if isgen {
+			actualMsg, err := genmsg.WritePb(ctx, methodName)
+			if err != nil {
+				return perrors.NewProtocolErrorWithErrMsg(err, fmt.Sprintf("protobuf marshal message failed: %s", err.Error()))
+			}
+			actualMsgBuf, ok := actualMsg.([]byte)
+			if !ok {
+				return perrors.NewProtocolErrorWithErrMsg(err, fmt.Sprintf("protobuf marshal message failed: %s", err.Error()))
+			}
+			_, err = out.WriteBinary(actualMsgBuf)
+			if err != nil {
+				return perrors.NewProtocolErrorWithMsg(fmt.Sprintf("protobuf marshal, write message buffer failed: %s", err.Error()))
+			}
+			return nil
+		}
+		// return error otherwise
+		return remote.NewTransErrorWithMsg(remote.InvalidProtocol, "encode failed, codec msg type not match with protobufCodec")
+	}
+
+	// 2. encode pb struct
+	// fast write
+	if msg, ok := data.(fastpb.Writer); ok {
+		msgsize := msg.Size()
+		actualMsgBuf, err := out.Malloc(msgsize)
+		if err != nil {
+			return perrors.NewProtocolErrorWithErrMsg(err, fmt.Sprintf("protobuf malloc size %d failed: %s", msgsize, err.Error()))
+		}
+		msg.FastWrite(actualMsgBuf)
+		return nil
+	}
+
+	var actualMsgBuf []byte
+	if actualMsgBuf, err = msg.Marshal(actualMsgBuf); err != nil {
+		return perrors.NewProtocolErrorWithErrMsg(err, fmt.Sprintf("protobuf marshal message failed: %s", err.Error()))
+	}
 	if _, err = out.WriteBinary(actualMsgBuf); err != nil {
 		return perrors.NewProtocolErrorWithMsg(fmt.Sprintf("protobuf marshal, write message buffer failed: %s", err.Error()))
 	}
@@ -135,14 +171,40 @@ func (c protobufCodec) Unmarshal(ctx context.Context, message remote.Message, in
 		if err := exception.Unmarshal(actualMsgBuf); err != nil {
 			return perrors.NewProtocolErrorWithMsg(fmt.Sprintf("protobuf unmarshal Exception failed: %s", err.Error()))
 		}
-		return &exception
+		return remote.NewTransError(exception.TypeID(), &exception)
 	}
 
 	if err = codec.NewDataIfNeeded(methodName, message); err != nil {
 		return err
 	}
 	data := message.Data()
-	msg, ok := data.(protobufMsgCodec)
+
+	// fast read
+	if msg, ok := data.(fastpb.Reader); ok {
+		if len(actualMsgBuf) == 0 {
+			// if all fields of a struct is default value, actualMsgLen will be zero and actualMsgBuf will be nil
+			// In the implementation of fastpb, if actualMsgBuf is nil, then fastpb will skip creating this struct, as a result user will get a nil pointer which is not expected.
+			// So, when actualMsgBuf is nil, use default protobuf unmarshal method to decode the struct.
+			// todo: fix fastpb
+		} else {
+			_, err := fastpb.ReadMessage(actualMsgBuf, fastpb.SkipTypeCheck, msg)
+			if err != nil {
+				return remote.NewTransErrorWithMsg(remote.ProtocolError, err.Error())
+			}
+			return nil
+		}
+	}
+
+	// Generic Case
+	if msg, ok := data.(MessageReaderWithMethodWithContext); ok {
+		err := msg.ReadPb(ctx, methodName, actualMsgBuf)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	msg, ok := data.(ProtobufMsgCodec)
 	if !ok {
 		return remote.NewTransErrorWithMsg(remote.InvalidProtocol, "decode failed, codec msg type not match with protobufCodec")
 	}
@@ -153,10 +215,20 @@ func (c protobufCodec) Unmarshal(ctx context.Context, message remote.Message, in
 }
 
 func (c protobufCodec) Name() string {
-	return "protobuf"
+	return serviceinfo.Protobuf.String()
 }
 
-type protobufMsgCodec interface {
+// MessageWriterWithContext  writes to output bytebuffer
+type MessageWriterWithContext interface {
+	WritePb(ctx context.Context, method string) (interface{}, error)
+}
+
+// MessageReaderWithMethodWithContext read from ActualMsgBuf with method
+type MessageReaderWithMethodWithContext interface {
+	ReadPb(ctx context.Context, method string, in []byte) error
+}
+
+type ProtobufMsgCodec interface {
 	Marshal(out []byte) ([]byte, error)
 	Unmarshal(in []byte) error
 }
@@ -169,14 +241,14 @@ func getValidData(methodName string, message remote.Message) (interface{}, error
 	if message.MessageType() != remote.Exception {
 		return data, nil
 	}
-	transErr, isTransErr := data.(remote.TransError)
+	transErr, isTransErr := data.(*remote.TransError)
 	if !isTransErr {
 		if err, isError := data.(error); isError {
-			encodeErr := newPbError(remote.InternalError, err.Error())
+			encodeErr := NewPbError(remote.InternalError, err.Error())
 			return encodeErr, nil
 		}
 		return nil, errors.New("exception relay need error type data")
 	}
-	encodeErr := newPbError(transErr.TypeID(), transErr.Error())
+	encodeErr := NewPbError(transErr.TypeID(), transErr.Error())
 	return encodeErr, nil
 }

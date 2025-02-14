@@ -28,11 +28,13 @@ import (
 	"github.com/cloudwego/kitex/server"
 )
 
+// TestNewServer tests the creation of a new server
 func TestNewServer(t *testing.T) {
-	addr, _ := net.ResolveTCPAddr("tcp", ":9999")
+	hostPort := test.GetLocalAddress()
+	addr, _ := net.ResolveTCPAddr("tcp", hostPort)
 	g := generic.BinaryThriftGeneric()
-	svr := NewServer(new(mockImpl), g, server.WithServiceAddr(addr))
-	time.AfterFunc(time.Second, func() {
+	svr := NewServer(new(mockImpl), g, server.WithServiceAddr(addr), server.WithExitWaitTime(time.Microsecond*10))
+	time.AfterFunc(time.Millisecond*500, func() {
 		err := svr.Stop()
 		test.Assert(t, err == nil, err)
 	})
@@ -40,15 +42,26 @@ func TestNewServer(t *testing.T) {
 	test.Assert(t, err == nil, err)
 }
 
+// TestNewServerWithServiceInfo tests the creation of a new server with service info
 func TestNewServerWithServiceInfo(t *testing.T) {
 	g := generic.BinaryThriftGeneric()
-	svr := NewServerWithServiceInfo(new(mockImpl), g, nil)
-	err := svr.Run()
-	test.Assert(t, strings.Contains(err.Error(), "no service"))
+	test.PanicAt(t, func() {
+		NewServerWithServiceInfo(new(mockImpl), g, nil)
+	}, func(err interface{}) bool {
+		if errMsg, ok := err.(error); ok {
+			return strings.Contains(errMsg.Error(), "svcInfo is nil.")
+		}
+		return true
+	})
 
-	svr = NewServerWithServiceInfo(nil, g, generic.ServiceInfo(g.PayloadCodecType()))
-	err = svr.Run()
-	test.Assert(t, strings.Contains(err.Error(), "handler is nil"))
+	test.PanicAt(t, func() {
+		NewServerWithServiceInfo(nil, g, generic.ServiceInfoWithGeneric(g))
+	}, func(err interface{}) bool {
+		if errMsg, ok := err.(error); ok {
+			return strings.Contains(errMsg.Error(), "handler is nil.")
+		}
+		return true
+	})
 
 	test.PanicAt(t, func() {
 		NewServerWithServiceInfo(nil, nil, nil)
@@ -56,13 +69,12 @@ func TestNewServerWithServiceInfo(t *testing.T) {
 		if errMsg, ok := err.(string); ok {
 			return strings.Contains(errMsg, "invalid Generic")
 		}
-		return false
+		return true
 	})
 }
 
 // GenericServiceImpl ...
-type mockImpl struct {
-}
+type mockImpl struct{}
 
 // GenericCall ...
 func (g *mockImpl) GenericCall(ctx context.Context, method string, request interface{}) (response interface{}, err error) {

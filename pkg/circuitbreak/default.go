@@ -23,30 +23,36 @@ import (
 	"github.com/cloudwego/kitex/pkg/kerrors"
 )
 
+// some types of error won't trigger circuit breaker
+var ignoreErrTypes = map[error]ErrorType{
+	kerrors.ErrInternalException: TypeIgnorable,
+	kerrors.ErrServiceDiscovery:  TypeIgnorable,
+	kerrors.ErrACL:               TypeIgnorable,
+	kerrors.ErrLoadbalance:       TypeIgnorable,
+	kerrors.ErrRPCFinish:         TypeIgnorable,
+}
+
 // ErrorTypeOnServiceLevel determines the error type with a service level criteria.
 func ErrorTypeOnServiceLevel(ctx context.Context, request, response interface{}, err error) ErrorType {
 	if err != nil {
-		var errTypes = map[error]ErrorType{
-			kerrors.ErrInternalException: TypeIgnorable,
-			kerrors.ErrServiceDiscovery:  TypeIgnorable,
-			kerrors.ErrACL:               TypeIgnorable,
-			kerrors.ErrLoadbalance:       TypeIgnorable,
-			kerrors.ErrCircuitBreak:      TypeFailure,
-			kerrors.ErrGetConnection:     TypeFailure,
-			kerrors.ErrNoMoreInstance:    TypeFailure,
-			kerrors.ErrRemoteOrNetwork:   TypeFailure,
-			kerrors.ErrRPCTimeout:        TypeTimeout,
-		}
-		for e, t := range errTypes {
+		for e, t := range ignoreErrTypes {
 			if errors.Is(err, e) {
 				return t
 			}
 		}
+		var we *errorWrapperWithType
+		if ok := errors.As(err, &we); ok {
+			return we.errType
+		}
+		if kerrors.IsTimeoutError(err) {
+			return TypeTimeout
+		}
+		return TypeFailure
 	}
 	return TypeSuccess
 }
 
-// ErrorTypeOnInstanceLevel determines the error type with a instance level criteria.
+// ErrorTypeOnInstanceLevel determines the error type with an instance level criteria.
 // Basically, it treats only the connection error as failure.
 func ErrorTypeOnInstanceLevel(ctx context.Context, request, response interface{}, err error) ErrorType {
 	if errors.Is(err, kerrors.ErrGetConnection) {

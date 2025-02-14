@@ -20,73 +20,93 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
+
 	"github.com/cloudwego/kitex/internal/mocks"
-	internal_stats "github.com/cloudwego/kitex/internal/stats"
+	mocksremote "github.com/cloudwego/kitex/internal/mocks/remote"
 	"github.com/cloudwego/kitex/internal/test"
-	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	"github.com/cloudwego/kitex/pkg/utils"
 )
 
 var (
-	transSvr *transServer
+	svrTransHdlr remote.ServerTransHandler
+	rwTimeout    = time.Second
+	addrStr      = "test addr"
+	addr         = utils.NewNetAddr("tcp", addrStr)
+	method       = "mock"
+	transSvr     *transServer
+	svrOpt       *remote.ServerOption
 )
 
-func init() {
-	fromInfo := rpcinfo.EmptyEndpointInfo()
-	rpcCfg := rpcinfo.NewRPCConfig()
-	mCfg := rpcinfo.AsMutableRPCConfig(rpcCfg)
-	mCfg.SetReadWriteTimeout(rwTimeout)
-	ink := rpcinfo.NewInvocation("", method)
-	rpcStat := rpcinfo.NewRPCStats()
-
-	var opt = &remote.ServerOption{
-		InitRPCInfoFunc: func(ctx context.Context, addr net.Addr) (rpcinfo.RPCInfo, context.Context) {
-			ri := rpcinfo.NewRPCInfo(fromInfo, nil, ink, rpcCfg, rpcStat)
-			rpcinfo.AsMutableEndpointInfo(ri.From()).SetAddress(addr)
-			ctx = rpcinfo.NewCtxWithRPCInfo(ctx, ri)
-			return ri, ctx
+func TestMain(m *testing.M) {
+	svcInfo := mocks.ServiceInfo()
+	svrOpt = &remote.ServerOption{
+		InitOrResetRPCInfoFunc: func(ri rpcinfo.RPCInfo, addr net.Addr) rpcinfo.RPCInfo {
+			fromInfo := rpcinfo.EmptyEndpointInfo()
+			rpcCfg := rpcinfo.NewRPCConfig()
+			mCfg := rpcinfo.AsMutableRPCConfig(rpcCfg)
+			mCfg.SetReadWriteTimeout(rwTimeout)
+			ink := rpcinfo.NewInvocation("", method)
+			rpcStat := rpcinfo.NewRPCStats()
+			nri := rpcinfo.NewRPCInfo(fromInfo, nil, ink, rpcCfg, rpcStat)
+			rpcinfo.AsMutableEndpointInfo(nri.From()).SetAddress(addr)
+			return nri
 		},
 		Codec: &MockCodec{
 			EncodeFunc: nil,
-			DecodeFunc: nil,
+			DecodeFunc: func(ctx context.Context, msg remote.Message, in remote.ByteBuffer) error {
+				msg.SpecifyServiceInfo(mocks.MockServiceName, mocks.MockMethod)
+				return nil
+			},
 		},
-		SvcInfo:   mocks.ServiceInfo(),
-		TracerCtl: &internal_stats.Controller{},
-		Logger:    klog.DefaultLogger(),
+		SvcSearcher:   mocksremote.NewDefaultSvcSearcher(),
+		TargetSvcInfo: svcInfo,
+		TracerCtl:     &rpcinfo.TraceController{},
 	}
-	svrTransHdlr, _ = newSvrTransHandler(opt)
-	transSvr = &transServer{opt: opt, transHdlr: svrTransHdlr}
+	svrTransHdlr, _ = newSvrTransHandler(svrOpt)
+	transSvr = NewTransServerFactory().NewTransServer(svrOpt, svrTransHdlr).(*transServer)
+
+	os.Exit(m.Run())
 }
 
+// TestCreateListener test trans_server CreateListener success
 func TestCreateListener(t *testing.T) {
-	// tcp
-	addrStr := "127.0.0.1:9090"
+	// tcp init
+	addrStr := "127.0.0.1:9091"
 	addr = utils.NewNetAddr("tcp", addrStr)
+
+	// test
 	ln, err := transSvr.CreateListener(addr)
 	test.Assert(t, err == nil, err)
 	test.Assert(t, ln.Addr().String() == addrStr)
 	ln.Close()
 
-	// uds
+	// uds init
 	addrStr = "server.addr"
 	addr, err = net.ResolveUnixAddr("unix", addrStr)
 	test.Assert(t, err == nil, err)
+
+	// test
 	ln, err = transSvr.CreateListener(addr)
 	test.Assert(t, err == nil, err)
 	test.Assert(t, ln.Addr().String() == addrStr)
 	ln.Close()
 }
 
+// TestBootStrap test trans_server BootstrapServer success
 func TestBootStrap(t *testing.T) {
-	// tcp
-	addrStr := "127.0.0.1:9090"
+	// tcp init
+	addrStr := "127.0.0.1:9092"
 	addr = utils.NewNetAddr("tcp", addrStr)
+
+	// test
 	ln, err := transSvr.CreateListener(addr)
 	test.Assert(t, err == nil, err)
 	test.Assert(t, ln.Addr().String() == addrStr)
@@ -94,16 +114,19 @@ func TestBootStrap(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		err = transSvr.BootstrapServer()
+		err = transSvr.BootstrapServer(ln)
 		test.Assert(t, err == nil, err)
 		wg.Done()
 	}()
 	time.Sleep(10 * time.Millisecond)
+
 	transSvr.Shutdown()
 	wg.Wait()
 }
 
-func TestOnConnActive(t *testing.T) {
+// TestOnConnActive test trans_server onConnActive success
+func TestConnOnActive(t *testing.T) {
+	// 1. prepare mock data
 	conn := &MockNetpollConn{
 		SetReadTimeoutFunc: func(timeout time.Duration) (e error) {
 			return nil
@@ -114,22 +137,36 @@ func TestOnConnActive(t *testing.T) {
 			},
 		},
 	}
+
+	// 2. test
 	connCount := 100
 	for i := 0; i < connCount; i++ {
 		transSvr.onConnActive(conn)
 	}
 	ctx := context.Background()
+
 	currConnCount := transSvr.ConnCount()
 	test.Assert(t, currConnCount.Value() == connCount)
 
 	for i := 0; i < connCount; i++ {
 		transSvr.onConnInactive(ctx, conn)
 	}
+
 	currConnCount = transSvr.ConnCount()
 	test.Assert(t, currConnCount.Value() == 0)
 }
 
-func TestOnConnRead(t *testing.T) {
+// TestOnConnActivePanic test panic recover when panic happen in OnActive
+func TestConnOnActiveAndOnInactivePanic(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer func() {
+		ctrl.Finish()
+	}()
+
+	inboundHandler := mocksremote.NewMockInboundHandler(ctrl)
+	transPl := remote.NewTransPipeline(svrTransHdlr)
+	transPl.AddInboundHandler(inboundHandler)
+	transSvrWithPl := NewTransServerFactory().NewTransServer(svrOpt, transPl).(*transServer)
 	conn := &MockNetpollConn{
 		Conn: mocks.Conn{
 			RemoteAddrFunc: func() (r net.Addr) {
@@ -137,6 +174,37 @@ func TestOnConnRead(t *testing.T) {
 			},
 		},
 	}
+
+	// test1: recover OnActive panic
+	inboundHandler.EXPECT().OnActive(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, conn net.Conn) (context.Context, error) {
+		panic("mock panic")
+	})
+	transSvrWithPl.onConnActive(conn)
+
+	// test2: recover OnInactive panic
+	inboundHandler.EXPECT().OnInactive(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, conn net.Conn) (context.Context, error) {
+		panic("mock panic")
+	})
+	transSvrWithPl.onConnInactive(context.Background(), conn)
+}
+
+// TestOnConnRead test trans_server onConnRead success
+func TestConnOnRead(t *testing.T) {
+	// prepare mock data
+	var isClosed bool
+	conn := &MockNetpollConn{
+		Conn: mocks.Conn{
+			RemoteAddrFunc: func() (r net.Addr) {
+				return addr
+			},
+			CloseFunc: func() (e error) {
+				isClosed = true
+				return nil
+			},
+		},
+	}
+
+	// case return err
 	mockErr := errors.New("mock error")
 	transSvr.transHdlr = &mocks.MockSvrTransHandler{
 		OnReadFunc: func(ctx context.Context, conn net.Conn) error {
@@ -146,4 +214,16 @@ func TestOnConnRead(t *testing.T) {
 	}
 	err := transSvr.onConnRead(context.Background(), conn)
 	test.Assert(t, err == nil, err)
+	test.Assert(t, isClosed)
+
+	// case panic
+	transSvr.transHdlr = &mocks.MockSvrTransHandler{
+		OnReadFunc: func(ctx context.Context, conn net.Conn) error {
+			panic("case panic")
+		},
+		Opt: transSvr.opt,
+	}
+	test.Panic(t, func() {
+		_ = transSvr.onConnRead(context.Background(), conn)
+	})
 }

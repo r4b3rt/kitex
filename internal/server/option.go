@@ -1,11 +1,11 @@
 /*
- * Copyright 2021 CloudWeGo
+ * Copyright 2021 CloudWeGo Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,26 +18,32 @@
 package server
 
 import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/cloudwego/localsession/backup"
+
 	"github.com/cloudwego/kitex/internal/configutil"
-	internal_stats "github.com/cloudwego/kitex/internal/stats"
+	"github.com/cloudwego/kitex/internal/stream"
 	"github.com/cloudwego/kitex/pkg/acl"
 	"github.com/cloudwego/kitex/pkg/diagnosis"
 	"github.com/cloudwego/kitex/pkg/endpoint"
 	"github.com/cloudwego/kitex/pkg/event"
-	"github.com/cloudwego/kitex/pkg/klog"
+	"github.com/cloudwego/kitex/pkg/gofunc"
 	"github.com/cloudwego/kitex/pkg/limit"
 	"github.com/cloudwego/kitex/pkg/limiter"
 	"github.com/cloudwego/kitex/pkg/proxy"
 	"github.com/cloudwego/kitex/pkg/registry"
 	"github.com/cloudwego/kitex/pkg/remote"
-	"github.com/cloudwego/kitex/pkg/remote/codec"
 	"github.com/cloudwego/kitex/pkg/remote/codec/protobuf"
 	"github.com/cloudwego/kitex/pkg/remote/codec/thrift"
-	"github.com/cloudwego/kitex/pkg/remote/trans/detection"
-	"github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
+	"github.com/cloudwego/kitex/pkg/remote/trans"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	"github.com/cloudwego/kitex/pkg/serviceinfo"
 	"github.com/cloudwego/kitex/pkg/stats"
+	"github.com/cloudwego/kitex/pkg/transmeta"
 	"github.com/cloudwego/kitex/pkg/utils"
 )
 
@@ -60,32 +66,54 @@ type Options struct {
 
 	MetaHandlers []remote.MetaHandler
 
-	RemoteOpt *remote.ServerOption
-	ErrHandle func(error) error
-	Proxy     proxy.BackwardProxy
+	RemoteOpt  *remote.ServerOption
+	ErrHandle  func(context.Context, error) error
+	ExitSignal func() <-chan error
+	Proxy      proxy.ReverseProxy
 
 	// Registry is used for service registry.
 	Registry registry.Registry
 	// RegistryInfo is used to in registry.
 	RegistryInfo *registry.Info
 
-	ACLRules      []acl.RejectFunc
-	Limits        *limit.Option
-	LimitReporter limiter.LimitReporter
+	ACLRules []acl.RejectFunc
+	Limit    Limit
 
 	MWBs []endpoint.MiddlewareBuilder
 
 	Bus    event.Bus
 	Events event.Queue
 
-	// DebugInfo should only contains objects that are suitable for json serialization.
+	SupportedTransportsFunc func(option remote.ServerOption) []string
+
+	// DebugInfo should only contain objects that are suitable for json serialization.
 	DebugInfo    utils.Slice
 	DebugService diagnosis.Service
 
 	// Observability
-	Logger     klog.FormatLogger
-	TracerCtl  *internal_stats.Controller
+	TracerCtl  *rpcinfo.TraceController
 	StatsLevel *stats.Level
+
+	BackupOpt backup.Options
+
+	// Streaming
+	Streaming stream.StreamingConfig // old version streaming API config
+	StreamX   StreamXOptions         // new version streaming API config
+
+	RefuseTrafficWithoutServiceName bool
+	EnableContextTimeout            bool
+}
+
+type Limit struct {
+	Limits        *limit.Option
+	LimitReporter limiter.LimitReporter
+	ConLimit      limiter.ConcurrencyLimiter
+	QPSLimit      limiter.RateLimiter
+
+	// QPSLimitPostDecode is true to indicate that the QPS limiter takes effect in
+	// the OnMessage callback, and false for the OnRead callback.
+	// Usually when the server is multiplexed, Kitex set it to True by default.
+	QPSLimitPostDecode bool
 }
 
 // NewOptions creates a default options.
@@ -94,14 +122,17 @@ func NewOptions(opts []Option) *Options {
 		Svr:          &rpcinfo.EndpointBasicInfo{},
 		Configs:      rpcinfo.NewRPCConfig(),
 		Once:         configutil.NewOptionOnce(),
-		RemoteOpt:    newServerOption(),
-		Logger:       klog.DefaultLogger(),
+		MetaHandlers: []remote.MetaHandler{transmeta.MetainfoServerHandler},
+		RemoteOpt:    newServerRemoteOption(),
 		DebugService: diagnosis.NoopService,
+		ExitSignal:   DefaultSysExitSignal,
 
 		Bus:    event.NewEventBus(),
 		Events: event.NewQueue(event.MaxEventNum),
 
-		TracerCtl: &internal_stats.Controller{},
+		SupportedTransportsFunc: DefaultSupportedTransportsFunc,
+
+		TracerCtl: &rpcinfo.TraceController{},
 		Registry:  registry.NoopRegistry,
 	}
 	ApplyOptions(opts, o)
@@ -116,21 +147,39 @@ func NewOptions(opts []Option) *Options {
 	return o
 }
 
-func newServerOption() *remote.ServerOption {
-	return &remote.ServerOption{
-		TransServerFactory:    netpoll.NewTransServerFactory(),
-		SvrHandlerFactory:     detection.NewSvrTransHandlerFactory(),
-		Codec:                 codec.NewDefaultCodec(),
-		Address:               defaultAddress,
-		ExitWaitTime:          defaultExitWaitTime,
-		MaxConnectionIdleTime: defaultConnectionIdleTime,
-		AcceptFailedDelayTime: defaultAcceptFailedDelayTime,
-	}
-}
-
 // ApplyOptions applies the given options.
 func ApplyOptions(opts []Option, o *Options) {
 	for _, op := range opts {
 		op.F(o, &o.DebugInfo)
 	}
+}
+
+func DefaultSysExitSignal() <-chan error {
+	errCh := make(chan error, 1)
+	gofunc.GoFunc(context.Background(), func() {
+		sig := SysExitSignal()
+		defer signal.Stop(sig)
+		<-sig
+		errCh <- nil
+	})
+	return errCh
+}
+
+func SysExitSignal() chan os.Signal {
+	signals := make(chan os.Signal, 1)
+	notifications := []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		notifications = append(notifications, syscall.SIGHUP)
+	}
+	signal.Notify(signals, notifications...)
+	return signals
+}
+
+func DefaultSupportedTransportsFunc(option remote.ServerOption) []string {
+	if factory, ok := option.SvrHandlerFactory.(trans.MuxEnabledFlag); ok {
+		if factory.MuxEnabled() {
+			return []string{"ttheader_mux"}
+		}
+	}
+	return []string{"ttheader", "framed", "ttheader_framed", "grpc"}
 }

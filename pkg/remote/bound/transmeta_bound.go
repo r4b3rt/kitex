@@ -66,6 +66,7 @@ func (h *transMetaHandler) OnMessage(ctx context.Context, args, result remote.Me
 		ctx = context.WithValue(ctx, consts.CtxKeyMethod, msg.RPCInfo().To().Method())
 		// TransferForward converts transient values to transient-upstream values and filters out original transient-upstream values.
 		// It should be used before the context is passing from server to client.
+		// reference https://github.com/bytedance/gopkg/tree/main/cloud/metainfo
 		// Notice, it should be after ReadMeta().
 		ctx = metainfo.TransferForward(ctx)
 	}
@@ -87,7 +88,7 @@ func (h *transMetaHandler) OnInactive(ctx context.Context, conn net.Conn) contex
 	return ctx
 }
 
-func getValidMsg(args remote.Message, result remote.Message) (msg remote.Message, isServer bool) {
+func getValidMsg(args, result remote.Message) (msg remote.Message, isServer bool) {
 	if args != nil && args.RPCRole() == remote.Server {
 		// server side, read arg
 		return args, true

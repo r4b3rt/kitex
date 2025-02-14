@@ -17,11 +17,7 @@
 // Package transmeta .
 package transmeta
 
-// Protocol constants.
-const (
-	MeshTHeaderProtocolVersion = "1.0.0"
-	MeshOrTTHeaderProtocol     = "3"
-)
+import "github.com/bytedance/gopkg/cloud/metainfo"
 
 // Keys in mesh header.
 const (
@@ -55,6 +51,7 @@ const (
 
 // key of header transport
 const (
+	HeaderIDLServiceName      = "isn"
 	HeaderTransRemoteAddr     = "rip"
 	HeaderTransToCluster      = "tc"
 	HeaderTransToIDC          = "ti"
@@ -66,4 +63,16 @@ const (
 	// the connection peer will shutdown later,so it send back the header to tell client to close the connection.
 	HeaderConnectionReadyToReset = "crrst"
 	HeaderProcessAtTime          = "K_ProcessAtTime"
+	// HeaderCRC32C is used to store the crc32c checksum of payload
+	HeaderCRC32C = "crc32c"
+)
+
+// key of acl token
+// You can set up acl token through metainfo.
+// eg:
+//
+//	ctx = metainfo.WithValue(ctx, "gdpr-token", "your token")
+const (
+	// GDPRToken is used to set up gdpr token into InfoIDACLToken
+	GDPRToken = metainfo.PrefixTransient + "gdpr-token"
 )

@@ -21,6 +21,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/cloudwego/kitex/pkg/kerrors"
+	"github.com/cloudwego/kitex/pkg/serviceinfo"
 	"github.com/cloudwego/kitex/pkg/stats"
 	"github.com/cloudwego/kitex/transport"
 )
@@ -37,14 +39,17 @@ type EndpointInfo interface {
 // RPCStats is used to collect statistics about the RPC.
 type RPCStats interface {
 	Record(ctx context.Context, event stats.Event, status stats.Status, info string)
-
 	SendSize() uint64
+	// LastSendSize returns the size of the last sent message in a stream.
+	LastSendSize() uint64
 	RecvSize() uint64
+	// LastRecvSize returns the size of the last received message in a stream.
+	LastRecvSize() uint64
 	Error() error
 	Panicked() (bool, interface{})
 	GetEvent(event stats.Event) Event
-
 	Level() stats.Level
+	CopyForRetry() RPCStats
 }
 
 // Event is the abstraction of an event happened at a specific time.
@@ -56,13 +61,30 @@ type Event interface {
 	IsNil() bool
 }
 
-// RPCConfig contains configuration for RPC.
-type RPCConfig interface {
+// Timeouts contains settings of timeouts.
+type Timeouts interface {
 	RPCTimeout() time.Duration
 	ConnectTimeout() time.Duration
 	ReadWriteTimeout() time.Duration
+}
+
+// TimeoutProvider provides timeout settings.
+type TimeoutProvider interface {
+	Timeouts(ri RPCInfo) Timeouts
+}
+
+type StreamConfig interface {
+	StreamRecvTimeout() time.Duration
+}
+
+// RPCConfig contains configuration for RPC.
+type RPCConfig interface {
+	Timeouts
+	StreamConfig
 	IOBufferSize() int
 	TransportProtocol() transport.Protocol
+	InteractionMode() InteractionMode
+	PayloadCodec() serviceinfo.PayloadCodec
 }
 
 // Invocation contains specific information about the call.
@@ -70,7 +92,10 @@ type Invocation interface {
 	PackageName() string
 	ServiceName() string
 	MethodName() string
+	StreamingMode() serviceinfo.StreamingMode
 	SeqID() int32
+	BizStatusErr() kerrors.BizStatusErrorIface
+	Extra(key string) interface{}
 }
 
 // RPCInfo is the core abstraction of information about an RPC in Kitex.

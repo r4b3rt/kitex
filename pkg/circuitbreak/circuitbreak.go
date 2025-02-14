@@ -18,6 +18,7 @@ package circuitbreak
 
 import (
 	"context"
+	"errors"
 
 	"github.com/bytedance/gopkg/cloud/circuitbreaker"
 
@@ -50,13 +51,23 @@ const (
 	TypeSuccess
 )
 
+// WrapErrorWithType is used to define the ErrorType for CircuitBreaker.
+// If you don't want the error trigger fuse, you can set the ErrorType to TypeIgnorable,
+// the error won't be regarded as failed.
+// eg: return circuitbreak.WrapErrorWithType.WithCause(err, circuitbreak.TypeIgnorable) in customized middleware.
+func WrapErrorWithType(err error, errorType ErrorType) CircuitBreakerAwareError {
+	return &errorWrapperWithType{err: err, errType: errorType}
+}
+
+type GetErrorTypeFunc func(ctx context.Context, request, response interface{}, err error) ErrorType
+
 // Control is the control strategy of the circuit breaker.
 type Control struct {
 	// Implement this to generate a key for the circuit breaker panel.
 	GetKey func(ctx context.Context, request interface{}) (key string, enabled bool)
 
 	// Implement this to determine the type of error.
-	GetErrorType func(ctx context.Context, request, response interface{}, err error) ErrorType
+	GetErrorType GetErrorTypeFunc
 
 	// Implement this to provide more detailed information about the circuit breaker.
 	// The err argument is always a kerrors.ErrCircuitBreak.
@@ -67,7 +78,6 @@ type Control struct {
 func NewCircuitBreakerMW(control Control, panel circuitbreaker.Panel) endpoint.Middleware {
 	return func(next endpoint.Endpoint) endpoint.Endpoint {
 		return func(ctx context.Context, request, response interface{}) (err error) {
-
 			key, enabled := control.GetKey(ctx, request)
 			if !enabled {
 				return next(ctx, request, response)
@@ -94,4 +104,31 @@ func RecordStat(ctx context.Context, request, response interface{}, err error, c
 	case TypeSuccess:
 		panel.Succeed(cbKey)
 	}
+}
+
+// CircuitBreakerAwareError is used to wrap ErrorType
+type CircuitBreakerAwareError interface {
+	error
+	TypeForCircuitBreaker() ErrorType
+}
+
+type errorWrapperWithType struct {
+	errType ErrorType
+	err     error
+}
+
+func (e errorWrapperWithType) TypeForCircuitBreaker() ErrorType {
+	return e.errType
+}
+
+func (e errorWrapperWithType) Error() string {
+	return e.err.Error()
+}
+
+func (e errorWrapperWithType) Unwrap() error {
+	return e.err
+}
+
+func (e errorWrapperWithType) Is(target error) bool {
+	return errors.Is(e.err, target)
 }

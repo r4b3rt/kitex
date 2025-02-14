@@ -51,19 +51,18 @@ func requestMappingValue(ctx context.Context, req *descriptor.HTTPRequest, field
 	}
 	t := field.Type
 	switch v := val.(type) {
-	case nil:
-		// json null
-		return nil, nil
-	case bool:
-		return v, nil
 	case json.Number:
-		return buildinTypeFromString(string(v), t)
+		bt, err := buildinTypeFromString(string(v), t)
+		if err != nil {
+			return v, nil
+		}
+		return bt, nil
 	case string:
-		return buildinTypeFromString(v, t)
-	case map[string]interface{}:
-		return v, nil
-	case []interface{}:
-		return v, nil
+		bt, err := buildinTypeFromString(v, t)
+		if err != nil {
+			return v, nil
+		}
+		return bt, err
 	}
 	return val, nil
 }
@@ -101,7 +100,7 @@ func buildinTypeFromString(s string, t *descriptor.TypeDescriptor) (interface{},
 		if err != nil {
 			return nil, err
 		}
-		return int64(i), nil
+		return i, nil
 	case descriptor.DOUBLE:
 		return strconv.ParseFloat(s, 64)
 	case descriptor.STRING:
@@ -130,10 +129,12 @@ func buildinTypeIntoString(val interface{}) string {
 		return strconv.FormatBool(v)
 	case int8:
 		return strconv.FormatInt(int64(v), 10)
+	case int16:
+		return strconv.FormatInt(int64(v), 10)
 	case int32:
 		return strconv.FormatInt(int64(v), 10)
 	case int64:
-		return strconv.FormatInt(int64(v), 10)
+		return strconv.FormatInt(v, 10)
 	case float64:
 		return strconv.FormatFloat(v, 'f', -1, 64)
 	case string:

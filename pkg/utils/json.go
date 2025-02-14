@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 CloudWeGo Authors
+ * Copyright 2024 CloudWeGo Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,6 +12,31 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * MIT License
+ *
+ * Copyright (c) 2016 json-iterator
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * The source code of this file is written based on json-iterator,
+ * all modifications are Copyright 2021 CloudWeGo Authors.
  */
 
 package utils
@@ -59,14 +84,10 @@ const (
 )
 
 // Map2JSONStr transform map[string]string to json str, perf is better than use json lib directly
-func Map2JSONStr(mapInfo map[string]string) (str string, err error) {
+func _Map2JSONStr(mapInfo map[string]string) (str string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if e, ok := r.(error); ok {
-				err = fmt.Errorf("Map2JSONStr panic: %w", e)
-			} else {
-				err = fmt.Errorf("Map2JSONStr panic: %+v", r)
-			}
+			err = fmt.Errorf("Map2JSONStr panic: %+v", r)
 		}
 	}()
 	size := len(mapInfo)
@@ -99,20 +120,16 @@ func Map2JSONStr(mapInfo map[string]string) (str string, err error) {
 }
 
 // JSONStr2Map transform json str to map[string]string, perf is better than use json lib directly
-func JSONStr2Map(jsonStr string) (mapInfo map[string]string, err error) {
+func _JSONStr2Map(jsonStr string) (mapInfo map[string]string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if e, ok := r.(error); ok {
-				err = fmt.Errorf("JSONStr2Map panic: %w", e)
-			} else {
-				err = fmt.Errorf("JSONStr2Map panic: %+v", r)
-			}
+			err = fmt.Errorf("JSONStr2Map panic: %+v", r)
 		}
 	}()
 	data := []byte(jsonStr)
 	size := len(data)
 	lastIdx := size - 1
-	var idx = 0
+	idx := 0
 	var c byte
 	if c, idx, err = nextToken(data, idx, lastIdx); err != nil {
 		return
@@ -121,7 +138,7 @@ func JSONStr2Map(jsonStr string) (mapInfo map[string]string, err error) {
 	if idx, isNull = checkNull(c, data, idx, lastIdx); isNull {
 		return
 	}
-	if c != LeftBrace || data[size-1] != RightBrace {
+	if c != LeftBrace {
 		err = fmt.Errorf("json str is invalid")
 		return
 	}
@@ -131,19 +148,27 @@ func JSONStr2Map(jsonStr string) (mapInfo map[string]string, err error) {
 
 	mapInfo = make(map[string]string)
 	for ; c == Comma || c == LeftBrace; c, idx, err = nextToken(data, idx, lastIdx) {
+		if err != nil {
+			err = fmt.Errorf("json str is invalid")
+			return
+		}
 		var key, val string
-		key, idx, err = readString(data, idx, lastIdx)
+		if key, idx, err = readString(data, idx, lastIdx); err != nil {
+			return
+		}
 		if c, idx, err = nextToken(data, idx, lastIdx); c != ':' || err != nil {
 			err = fmt.Errorf("json str is invalid, expect ':' after object field, but found %s", string(c))
 			return
 		}
-		val, idx, err = readString(data, idx, lastIdx)
+		if val, idx, err = readString(data, idx, lastIdx); err != nil {
+			return
+		}
 		mapInfo[key] = val
 	}
 	return mapInfo, err
 }
 
-func readString(buf []byte, idx int, lastIdx int) (string, int, error) {
+func readString(buf []byte, idx, lastIdx int) (string, int, error) {
 	var err error
 	var c byte
 	var isNull bool
@@ -153,7 +178,7 @@ func readString(buf []byte, idx int, lastIdx int) (string, int, error) {
 	var str []byte
 	if c == '"' {
 		start := idx
-		var noESC = true
+		noESC := true
 		for idx <= lastIdx {
 			if c, idx, err = readByte(buf, idx, lastIdx); err != nil {
 				return "", idx, err
@@ -192,7 +217,8 @@ func readString(buf []byte, idx int, lastIdx int) (string, int, error) {
 	err = fmt.Errorf("json str is invalid, expects '\"' or n, but found %s", string(c))
 	return *(*string)(unsafe.Pointer(&str)), idx, err
 }
-func readByte(buf []byte, idx int, lastIdx int) (byte, int, error) {
+
+func readByte(buf []byte, idx, lastIdx int) (byte, int, error) {
 	if lastIdx < idx {
 		return 0, -1, fmt.Errorf("readByte no more data")
 	}
@@ -201,7 +227,7 @@ func readByte(buf []byte, idx int, lastIdx int) (byte, int, error) {
 	return c, idx, nil
 }
 
-func nextToken(buf []byte, idx int, lastIdx int) (byte, int, error) {
+func nextToken(buf []byte, idx, lastIdx int) (byte, int, error) {
 	if lastIdx < idx {
 		return 0, -1, errors.New("nextToken no more data")
 	}
@@ -218,7 +244,7 @@ func nextToken(buf []byte, idx int, lastIdx int) (byte, int, error) {
 	return c, idx, nil
 }
 
-func checkNull(c byte, data []byte, idx int, lastIdx int) (int, bool) {
+func checkNull(c byte, data []byte, idx, lastIdx int) (int, bool) {
 	if c == 'n' {
 		ch, idx, _ := readByte(data, idx, lastIdx)
 		if ch != 'u' {
@@ -240,7 +266,7 @@ func checkNull(c byte, data []byte, idx int, lastIdx int) (int, bool) {
 	return idx, false
 }
 
-func readU4(buf []byte, idx int, lastIdx int) (rune, int, error) {
+func readU4(buf []byte, idx, lastIdx int) (rune, int, error) {
 	var err error
 	var ret rune
 	for i := 0; i < 4; i++ {
@@ -255,7 +281,7 @@ func readU4(buf []byte, idx int, lastIdx int) (rune, int, error) {
 		} else if c >= 'A' && c <= 'F' {
 			ret = ret*16 + rune(c-'A'+10)
 		} else {
-			return ret, idx, fmt.Errorf("readU4 expects 0~9 or a~f, but found %v", string([]byte{c}))
+			return ret, idx, fmt.Errorf("unicode invalid: expects 0~9 or a~f, but found %v", string([]byte{c}))
 		}
 	}
 	return ret, idx, nil

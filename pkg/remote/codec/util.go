@@ -45,15 +45,17 @@ func SetOrCheckMethodName(methodName string, message remote.Message) error {
 	if message.RPCRole() == remote.Client {
 		return fmt.Errorf("wrong method name, expect=%s, actual=%s", callMethodName, methodName)
 	}
-	if ink, ok := ink.(rpcinfo.InvocationSetter); ok {
-		ink.SetMethodName(methodName)
-	} else {
+	inkSetter, ok := ink.(rpcinfo.InvocationSetter)
+	if !ok {
 		return errors.New("the interface Invocation doesn't implement InvocationSetter")
 	}
-	svcInfo := message.ServiceInfo()
-	if mt := svcInfo.MethodInfo(methodName); mt == nil {
-		return remote.NewTransErrorWithMsg(remote.UnknownMethod, fmt.Sprintf("unknown method %s", methodName))
+	inkSetter.SetMethodName(methodName)
+	svcInfo, err := message.SpecifyServiceInfo(ink.ServiceName(), methodName)
+	if err != nil {
+		return err
 	}
+	inkSetter.SetPackageName(svcInfo.GetPackageName())
+	inkSetter.SetServiceName(svcInfo.ServiceName)
 
 	// unknown method doesn't set methodName for RPCInfo.To(), or lead inconsistent with old version
 	rpcinfo.AsMutableEndpointInfo(ri.To()).SetMethod(methodName)
@@ -63,7 +65,7 @@ func SetOrCheckMethodName(methodName string, message remote.Message) error {
 // SetOrCheckSeqID is used to check the sequence ID.
 func SetOrCheckSeqID(seqID int32, message remote.Message) error {
 	switch message.MessageType() {
-	case remote.Call:
+	case remote.Call, remote.Oneway:
 		if ink, ok := message.RPCInfo().Invocation().(rpcinfo.InvocationSetter); ok {
 			ink.SetSeqID(seqID)
 		} else {

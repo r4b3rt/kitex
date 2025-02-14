@@ -20,15 +20,20 @@ package client
 // It is used for customized extension.
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
+	"reflect"
 
 	"github.com/cloudwego/kitex/internal/client"
 	"github.com/cloudwego/kitex/pkg/acl"
 	"github.com/cloudwego/kitex/pkg/diagnosis"
 	"github.com/cloudwego/kitex/pkg/generic"
+	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/proxy"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/remote/trans/netpoll"
+	"github.com/cloudwego/kitex/pkg/remote/trans/nphttp2/grpc"
 	"github.com/cloudwego/kitex/pkg/retry"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
 	"github.com/cloudwego/kitex/pkg/utils"
@@ -48,7 +53,6 @@ func WithHTTPConnection() Option {
 // WithClientBasicInfo provides initial information for client endpoint in RPCInfo.
 func WithClientBasicInfo(ebi *rpcinfo.EndpointBasicInfo) Option {
 	return Option{F: func(o *client.Options, di *utils.Slice) {
-		o.Once.OnceOrPanic()
 		di.Push(fmt.Sprintf("WithClientBasicInfo(%+v)", ebi))
 		if ebi != nil {
 			o.Cli = ebi
@@ -56,7 +60,7 @@ func WithClientBasicInfo(ebi *rpcinfo.EndpointBasicInfo) Option {
 	}}
 }
 
-// WithDiagnosisService sets the diagnosis service for gathering debug informations.
+// WithDiagnosisService sets the diagnosis service for gathering debug information.
 func WithDiagnosisService(ds diagnosis.Service) Option {
 	return Option{F: func(o *client.Options, di *utils.Slice) {
 		o.Once.OnceOrPanic()
@@ -133,12 +137,19 @@ func WithDialer(d remote.Dialer) Option {
 	}}
 }
 
-// WithConnPool to set connection pool
+// WithConnPool sets the connection pool.
+// Note that this option can only be specified once. If more
+// than one pool is specified by this option, only the first
+// one will be used.
 func WithConnPool(pool remote.ConnPool) Option {
 	return Option{F: func(o *client.Options, di *utils.Slice) {
 		di.Push(fmt.Sprintf("WithConnPool((%T)", pool))
 
-		o.RemoteOpt.ConnPool = pool
+		if o.RemoteOpt.ConnPool == nil {
+			o.RemoteOpt.ConnPool = pool
+		} else {
+			klog.Warnf("The connection pool has been initialized. The call to WithConnPool will not take effect.")
+		}
 	}}
 }
 
@@ -184,7 +195,7 @@ func WithCloseCallbacks(callback func() error) Option {
 }
 
 // WithErrorHandler sets the error handler.
-func WithErrorHandler(f func(error) error) Option {
+func WithErrorHandler(f func(context.Context, error) error) Option {
 	return Option{F: func(o *client.Options, di *utils.Slice) {
 		o.Once.OnceOrPanic()
 		di.Push(fmt.Sprintf("WithErrorHandler(%+v)", utils.GetFuncName(f)))
@@ -198,6 +209,39 @@ func WithBoundHandler(h remote.BoundHandler) Option {
 	return Option{F: func(o *client.Options, di *utils.Slice) {
 		di.Push(fmt.Sprintf("AddBoundHandler(%T)", h))
 
-		doAddBoundHandler(h, o.RemoteOpt)
+		exist := false
+		switch handler := h.(type) {
+		case remote.InboundHandler:
+			for _, inboundHandler := range o.RemoteOpt.Inbounds {
+				if reflect.DeepEqual(inboundHandler, handler) {
+					exist = true
+					break
+				}
+			}
+		case remote.OutboundHandler:
+			for _, outboundHandler := range o.RemoteOpt.Outbounds {
+				if reflect.DeepEqual(outboundHandler, handler) {
+					exist = true
+					break
+				}
+			}
+		}
+		// prevent duplication
+		if !exist {
+			o.RemoteOpt.AppendBoundHandler(h)
+		} else {
+			klog.Warnf("KITEX: BoundHandler already exists, BoundHandler=%v", h)
+		}
+	}}
+}
+
+// WithGRPCTLSConfig sets the TLS config for gRPC client.
+func WithGRPCTLSConfig(tlsConfig *tls.Config) Option {
+	return Option{F: func(o *client.Options, di *utils.Slice) {
+		if tlsConfig == nil {
+			panic("invalid TLS config: nil")
+		}
+		di.Push("WithGRPCTLSConfig")
+		o.GRPCConnectOpts.TLSConfig = grpc.TLSConfig(tlsConfig)
 	}}
 }

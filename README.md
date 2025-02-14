@@ -1,176 +1,127 @@
 # CloudWeGo-Kitex
 
-Kitex 字节跳动内部的 Golang 微服务 RPC 框架，具有**高性能**、**强可扩展**的特点，针对字节内部做了定制扩展。如今越来越多的微服务选择使用 Golang，我们考虑将 Kitex 开源出来丰富开源社区。如果对微服务性能有要求，又希望定制扩展融入自己的治理体系，Kitex 会是一个不错的选择。
+English | [中文](README_cn.md)
 
-## 框架特点
+[![Release](https://img.shields.io/github/v/release/cloudwego/kitex)](https://github.com/cloudwego/kitex/releases)
+[![WebSite](https://img.shields.io/website?up_message=cloudwego&url=https%3A%2F%2Fwww.cloudwego.io%2F)](https://www.cloudwego.io/)
+[![License](https://img.shields.io/github/license/cloudwego/kitex)](https://github.com/cloudwego/kitex/blob/main/LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cloudwego/kitex)](https://goreportcard.com/report/github.com/cloudwego/kitex)
+[![OpenIssue](https://img.shields.io/github/issues/cloudwego/kitex)](https://github.com/cloudwego/kitex/issues)
+[![ClosedIssue](https://img.shields.io/github/issues-closed/cloudwego/kitex)](https://github.com/cloudwego/kitex/issues?q=is%3Aissue+is%3Aclosed)
+![Stars](https://img.shields.io/github/stars/cloudwego/kitex)
+![Forks](https://img.shields.io/github/forks/cloudwego/kitex)
 
-- **高性能**
+Kitex [kaɪt'eks] is a **high-performance** and **strong-extensibility** Go RPC framework that helps developers build microservices. If the performance and extensibility are the main concerns when you develop microservices, Kitex can be a good choice.
 
-  使用自研的高性能网络库 [Netpoll](https://github.com/cloudwego/netpoll)，性能相较 go net 具有显著优势。
+## Basic Features
 
-- **扩展性**
+- **High Performance**
 
-  提供了较多的扩展接口以及默认扩展实现，使用者也可以根据需要自行定制扩展，具体见下面的框架扩展。
+Kitex integrates [Netpoll](https://github.com/cloudwego/netpoll), a high-performance network library, which offers significant performance advantage over [go net](https://pkg.go.dev/net).
 
-- **多消息协议**
+- **Extensibility**
 
-  RPC 消息协议默认支持 **Thrift**、**Kitex Protobuf**、**gRPC**。Thrift 支持 Buffered 和 Framed 二进制协议；Kitex Protobuf 是 Kitex 自定义的 Protobuf 消息协议，协议格式类似 Thrift；gRPC 是对 gRPC 消息协议的支持，可以与 gRPC 互通。除此之外，使用者也可以扩展自己的消息协议。
+Kitex provides many interfaces with default implementation for users to customize. You can extend or inject them into Kitex to fulfill your needs (please refer to the framework extension section below).
 
-- **多传输协议**
+- **Multi-message Protocol**
 
-  传输协议封装消息协议进行 RPC 互通，传输协议可以额外透传元信息，用于服务治理，Kitex 支持的传输协议有 **TTHeader**、**HTTP2**。TTHeader 可以和 Thrift、Kitex Protobuf 结合使用；HTTP2 目前主要是结合 gRPC 协议使用，后续也会支持 Thrift。
+Kitex is designed to be extensible to support multiple RPC messaging protocols. The initial release contains support for **Thrift**, **Kitex Protobuf** and **gRPC**, in which Kitex Protobuf is a Kitex custom Protobuf messaging protocol with a protocol format similar to Thrift. Kitex also supports developers extending their own messaging protocols.
 
-- **多交互方式**
+- **Multi-transport Protocol**
 
-  支持 **PingPong**、**Oneway**、**双向 Streaming**。其中 Oneway 目前支对 Thrift 协议支持，双向 Streaming 只对 gRPC 支持，后续会考虑支持 Thrift 的双向 Streaming。
+For service governance, Kitex supports **TTHeader** and **HTTP2**. TTHeader can be used in conjunction with Thrift and Kitex Protobuf.
 
-- **服务治理**
+- **Multi-message Type**
 
-  支持服务注册/发现、负载均衡、熔断、限流、重试、监控、链路跟踪、日志、诊断等服务治理模块，大部分均已提供默认扩展，使用者可选择集成。
+Kitex supports **PingPong**, **One-way**, and **Bidirectional Streaming**. Among them, One-way currently only supports Thrift protocol.
 
-- **代码生成**
+- **Service Governance**
 
-  Kitex 内置代码生成工具，可支持生成 **Thrift**、**Protobuf** 以及脚手架代码。
+Kitex integrates service governance modules such as service registry, service discovery, load balancing, circuit breaker, rate limiting, retry, monitoring, tracing, logging, diagnosis, etc. Most of these have been provided with default extensions, giving users the option to integrate them as desired.
 
-## 框架性能
+- **Code Generation**
 
-性能测试只能提供相对参考，工业场景下，有诸多因素可以影响实际的性能表现。
+Kitex has built-in code generation tools that support generating **Thrift**, **Protobuf**, and scaffold code.
 
-由于开源社区缺少支持 thrift 的优秀 RPC 框架，当前对比项目为 [grpc](https://github.com/grpc/grpc), [rpcx](https://github.com/smallnest/rpcx), 均使用 protobuf 协议。
+## Documentation
 
-我们通过 [测试代码](https://github.com/cloudwego/kitex-benchmark) 比较了它们的性能，测试表明 [Kitex](https://github.com/cloudwego/kitex) 具有明显优势。
+- [**Getting Started**](https://www.cloudwego.io/docs/kitex/getting-started/)
 
-### 测试环境
+- **User Guide**
 
-* CPU:    Intel(R) Xeon(R) Gold 5118 CPU @ 2.30GHz, 4 cores
-* Memory: 8GB
-* OS:     Debian 5.4.56.bsk.1-amd64 x86_64 GNU/Linux
-* Go:     1.15.4
-
-### 并发表现 (Echo 1KB, 改变并发量)
-
-| QPS                                                  |                         TP99                          |                         TP999                          |
-| :--------------------------------------------------- | :---------------------------------------------------: | :----------------------------------------------------: |
-| ![image](docs/images/performance_concurrent_qps.png) | ![image](docs/images/performance_concurrent_tp99.png) | ![image](docs/images/performance_concurrent_tp999.png) |
-
-### 吞吐表现 (并发 100, 改变包大小)
-
-| QPS                                                |                        TP99                         |                        TP999                         |
-| :------------------------------------------------- | :-------------------------------------------------: | :--------------------------------------------------: |
-| ![image](docs/images/performance_bodysize_qps.png) | ![image](docs/images/performance_bodysize_tp99.png) | ![image](docs/images/performance_bodysize_tp999.png) |
-
-## 详细文档
-  - [**快速开始**](docs/guide/getting_started_cn.md)
-
-  - **用户指南**
+  - **Basic Features**
+  
+    Including Message Type, Supported Protocols, Directly Invoke, Connection Pool, Timeout Control, Request Retry, LoadBalancer, Circuit Breaker, Rate Limiting, Instrumentation Control, Logging and HttpResolver.[[more]](https://www.cloudwego.io/docs/kitex/tutorials/basic-feature/)
     
-    - 基本特性
+  - **Governance Features**
+  
+    Supporting Service Discovery, Monitoring, Tracing and Customized Access Control.[[more]](https://www.cloudwego.io/docs/kitex/tutorials/service-governance/)
     
-      - [请求方式（PingPong、Oneway、Streaming）](docs/guide/basic-features/interaction_cn.md)
+  - **Advanced Features**
+  
+    Supporting Generic Call and Server SDK Mode.[[more]](https://www.cloudwego.io/docs/kitex/tutorials/advanced-feature/)
     
-      - [支持协议（Thrift、Kitex Protobuf、gRPC protocol）](docs/guide/basic-features/protocols_cn.md)
+  - **Code Generation**
+  
+    Including Code Generation Tool and Combined Service.[[more]](https://www.cloudwego.io/docs/kitex/tutorials/code-gen/)
     
-      - [应用层传输协议 TTHeader](docs/guide/basic-features/ttheader_cn.md)
-    
-      - [直连访问](docs/guide/basic-features/visit_directly_cn.md)
-    
-      - [连接池](docs/guide/basic-features/connpool_cn.md)
-    
-      - [超时控制](docs/guide/basic-features/timeout_cn.md)
-    
-      - [请求重试](docs/guide/basic-features/retry_cn.md)
-    
-      - [负载均衡](docs/guide/basic-features/loadbalance_cn.md) 
-    
-      - [熔断](docs/guide/basic-features/circuitbreaker_cn.md)
-    
-      - [限流](docs/guide/basic-features/limiting_cn.md)
-    
-      - [埋点粒度控制](docs/guide/basic-features/tracing_cn.md)
-    
-      - [日志](docs/guide/basic-features/logging_cn.md)
-      
-      - [HttpResolver](docs/guide/basic-features/HTTP_resolver_cn.md)
-    
-    - 治理特性
-      
-      - [服务发现](docs/guide/service-government/discovery_cn.md)
-      
-      - [监控](docs/guide/service-government/monitoring_cn.md)
-      
-      - [链路跟踪](docs/guide/service-government/tracing_cn.md)
-      
-      - [自定义访问控制](docs/guide/service-government/access_control_cn.md)
-      
-    - 高级特性
-    
-      - [泛化调用](docs/guide/advanced-feature/TODO_cn.md)
-    
-      - [Server SDK 化](docs/guide/basic-features/invoker_cn.md)
-    
-    - 代码生成
-    
-      - [代码生成工具](docs/guide/basic-features/code_generation_cn.md)
+  - **Framework Extension**
+  
+    Providing Middleware Extensions, Suite Extensions, Service Registry, Service Discovery, Customize LoadBalancer, Monitoring, Logging, Codec, Transport Module, Transport Pipeline, Metadata Transparent Transmission, Diagnosis Module.[[more]](https://www.cloudwego.io/docs/kitex/tutorials/framework-exten/)
+  
+- **Reference**
 
-      - [Combine Service](docs/guide/basic-features/combine_service_cn.md)
-    
-    - 框架扩展
-    
-      - [基本扩展 - 自定义Middleware](docs/guide/extension/middleware_cn.md)
-    
-      - [Suite 扩展（封装自定义治理模块）](docs/guide/extension/suite_cn.md)
-    
-      - [服务注册扩展](docs/guide/extension/registry_cn.md)
-    
-      - [服务发现扩展](docs/guide/extension/discovery_cn.md)
-    
-      - [负载均衡扩展](docs/guide/extension/loadbalance_cn.md)
-    
-      - [监控扩展](docs/guide/extension/monitoring_cn.md)
-    
-      - [日志扩展](docs/guide/basic-features/logging_cn.md)
-    
-      - [编解码(协议)扩展](docs/guide/extension/codec_cn.md)
-    
-      - [传输模块扩展](docs/guide/extension/transport_cn.md)
-    
-      - [Transport Pipeline-Bound扩展](docs/guide/extension/trans_pipeline_cn.md)
-    
-      - [元信息传递扩展](docs/guide/extension/transmeta_cn.md)
-    
-      - [诊断模块扩展](docs/guide/extension/diagnosis_cn.md)
-    
-  - **参考**
+  - For Transport Protocol, Exception Instruction and Version Specification, please refer to [doc](https://www.cloudwego.io/docs/kitex/reference/).
 
-    - [异常说明](docs/reference/exception_cn.md)
+- **Best Practice**
+  - Kitex best practices in production, such as graceful shutdown, error handling, integration testing. [More](https://www.cloudwego.io/docs/kitex/best-practice/)
 
-    - [版本管理](docs/reference/version_cn.md)   
+- **FAQ**
 
-  - **FAQ**
-## 相关项目
-- [Netpoll](https://github.com/cloudwego/netpoll): 自研的高性能网络库，Kitex 默认集成的。
-- [kitex-contrib](https://github.com/kitex-contrib)：Kitex 的部分扩展库，使用者可以根据需求通过 Option 集成进 Kitex 中。
-- [Example](https://github.com/cloudwego/kitex-examples)：Kitex 的使用示例。
+  - Please refer to [FAQ](https://www.cloudwego.io/docs/kitex/faq/).
 
-## 相关文章
+## Performance
 
-- [字节跳动 Go RPC 框架 Kitex 性能优化实践](https://mp.weixin.qq.com/s/Xoaoiotl7ZQoG2iXo9_DWg)
-- [字节跳动在 Go 网络库上的实践](https://mp.weixin.qq.com/s?__biz=MzI1MzYzMjE0MQ==&mid=2247485756&idx=1&sn=4d2712e4bfb9be27a790fa15159a7be1&chksm=e9d0c2dedea74bc8179af39888a5b2b99266587cad32744ad11092b91ec2e2babc74e69090e6&scene=21#wechat_redirect)
+Performance benchmark can only provide limited reference. In production, there are many factors can affect actual performance.
 
-## 贡献代码
+We provide the [kitex-benchmark](https://github.com/cloudwego/kitex-benchmark) project to track and compare the performance of Kitex and other frameworks under different conditions for reference.
 
-[Contributing](CONTRIBUTING.md)。
+## Related Projects
 
-## 开源许可
-Kitex 基于[Apache License 2.0](LICENSE) 许可证，其依赖的三方组件的开源许可见 [Licenses](licenses)。
+- [Netpoll](https://github.com/cloudwego/netpoll): A high-performance network library.
+- [kitex-contrib](https://github.com/kitex-contrib): A partial extension library of Kitex, which users can integrate into Kitex through options according to their needs.
+- [kitex-examples](https://github.com/cloudwego/kitex-examples): Examples of Kitex showcasing various features.
+- [biz-demo](https://github.com/cloudwego/biz-demo): Business demos using Kitex.
 
-## 联系我们
-- Email: conduct@cloudwego.io
+## Blogs
+- [Enhancing Performance in Microservice Architecture with Kitex](https://www.cloudwego.io/blog/2024/01/29/enhancing-performance-in-microservice-architecture-with-kitex/)
+- [CloudWeGo: A leading practice for building enterprise cloud native middleware!](https://www.cloudwego.io/blog/2023/06/15/cloudwego-a-leading-practice-for-building-enterprise-cloud-native-middleware/)
+- [Kitex: Unifying Open Source Practice for a High-Performance RPC Framework](https://www.cloudwego.io/blog/2022/09/30/kitex-unifying-open-source-practice-for-a-high-performance-rpc-framework/)
+- [Performance Optimization on Kitex](https://www.cloudwego.io/blog/2021/09/23/performance-optimization-on-kitex/)
+- [ByteDance Practice on Go Network Library](https://www.cloudwego.io/blog/2021/10/09/bytedance-practices-on-go-network-library/)
+- [Getting Started With Kitex's Practice: Performance Testing Guide](https://www.cloudwego.io/blog/2021/11/24/getting-started-with-kitexs-practice-performance-testing-guide/)
+
+## Contributing
+
+Contributor guide: [Contributing](https://github.com/cloudwego/kitex/blob/develop/CONTRIBUTING.md).
+
+## License
+
+Kitex is distributed under the [Apache License, version 2.0](https://github.com/cloudwego/kitex/blob/develop/LICENSE). The licenses of third party dependencies of Kitex are explained [here](https://github.com/cloudwego/kitex/blob/develop/licenses).
+
+## Community
+- Email: [conduct@cloudwego.io](conduct@cloudwego.io)
+- How to become a member: [COMMUNITY MEMBERSHIP](https://github.com/cloudwego/community/blob/main/COMMUNITY_MEMBERSHIP.md)
 - Issues: [Issues](https://github.com/cloudwego/kitex/issues)
-- 飞书用户群（[注册飞书](https://www.feishu.cn/)进群）
+- Discord: Join community with [Discord Channel](https://discord.gg/jceZSE7DsW).
+- Lark: Scan the QR code below with [Lark](https://www.larksuite.com/zh_cn/download) to join our CloudWeGo/kitex user group.
 
-  ![LarkGroup](docs/images/LarkGroup.jpg) 
+  ![LarkGroup](images/lark_group.png)
 
+## Landscapes
 
-
-
+<p align="center">
+<img src="https://landscape.cncf.io/images/cncf-landscape-horizontal-color.svg" width="150"/>&nbsp;&nbsp;<img src="https://www.cncf.io/wp-content/uploads/2023/04/cncf-main-site-logo.svg" width="200"/>
+<br/><br/>
+CloudWeGo enriches the <a href="https://landscape.cncf.io/">CNCF CLOUD NATIVE Landscape</a>.
+</p>

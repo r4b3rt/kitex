@@ -17,14 +17,12 @@
 package remotesvr
 
 import (
-	"context"
 	"errors"
 	"net"
 	"testing"
 
 	"github.com/cloudwego/kitex/internal/mocks"
 	"github.com/cloudwego/kitex/internal/test"
-	"github.com/cloudwego/kitex/pkg/klog"
 	"github.com/cloudwego/kitex/pkg/remote"
 	"github.com/cloudwego/kitex/pkg/utils"
 )
@@ -32,26 +30,30 @@ import (
 func TestServerStart(t *testing.T) {
 	isCreateListener := false
 	isBootstrapped := false
+	var ln net.Listener
 	transSvr := &mocks.MockTransServer{
 		CreateListenerFunc: func(addr net.Addr) (listener net.Listener, err error) {
 			isCreateListener = true
-			return nil, nil
+			ln, err = net.Listen("tcp", "localhost:8888")
+			return ln, err
 		},
-		BootstrapServerFunc: func() (err error) {
+		BootstrapServerFunc: func(net.Listener) (err error) {
 			isBootstrapped = true
 			return nil
 		},
+		ShutdownFunc: func() (err error) {
+			if ln != nil {
+				ln.Close()
+			}
+			return nil
+		},
 	}
-	var opt = &remote.ServerOption{
+	opt := &remote.ServerOption{
 		Address:            utils.NewNetAddr("tcp", "test"),
 		TransServerFactory: mocks.NewMockTransServerFactory(transSvr),
-		Logger:             klog.DefaultLogger(),
-	}
-	inkHdlrFunc := func(ctx context.Context, req, resp interface{}) (err error) {
-		return nil
 	}
 	transHdrl := &mocks.MockSvrTransHandler{}
-	svr, err := NewServer(opt, inkHdlrFunc, transHdrl)
+	svr, err := NewServer(opt, transHdrl)
 	test.Assert(t, err == nil, err)
 
 	err = <-svr.Start()
@@ -70,16 +72,12 @@ func TestServerStartListenErr(t *testing.T) {
 			return nil, mockErr
 		},
 	}
-	var opt = &remote.ServerOption{
+	opt := &remote.ServerOption{
 		Address:            utils.NewNetAddr("tcp", "test"),
 		TransServerFactory: mocks.NewMockTransServerFactory(transSvr),
-		Logger:             klog.DefaultLogger(),
-	}
-	inkHdlrFunc := func(ctx context.Context, req, resp interface{}) (err error) {
-		return nil
 	}
 	transHdrl := &mocks.MockSvrTransHandler{}
-	svr, err := NewServer(opt, inkHdlrFunc, transHdrl)
+	svr, err := NewServer(opt, transHdrl)
 	test.Assert(t, err == nil, err)
 
 	err = <-svr.Start()

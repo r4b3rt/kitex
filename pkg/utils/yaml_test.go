@@ -18,19 +18,19 @@ package utils
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/cloudwego/kitex/internal/test"
 )
 
-const (
-	TestYamlFile = "/tmp/test.yaml"
-)
+func getTestYamlFile(t *testing.T) string {
+	return filepath.Join(t.TempDir(), "test.yaml")
+}
 
-var (
-	cfg *YamlConfig
-)
+var cfg *YamlConfig
 
 func createTestYamlFile(t *testing.T, path string) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.ModePerm)
@@ -79,29 +79,26 @@ MockFloat64: 123456.789`
 	}
 }
 
-func deleteTestYamlFile(t *testing.T, path string) {
-	if err := os.Remove(path); err != nil {
-		t.Errorf("Remove file: %s error, err: %s", path, err.Error())
+func TestMain(m *testing.M) {
+	if runtime.GOOS == "windows" {
+		return
 	}
-}
-
-func init() {
 	t := &testing.T{}
-	createTestYamlFile(t, TestYamlFile)
-	defer func() {
-		deleteTestYamlFile(t, TestYamlFile)
-	}()
 
-	cfg, _ = ReadYamlConfigFile(TestYamlFile)
+	testYamlFile := getTestYamlFile(t)
+
+	createTestYamlFile(t, testYamlFile)
+
+	cfg, _ = ReadYamlConfigFile(testYamlFile)
+
+	os.Exit(m.Run())
 }
 
 func Test_ReadYamlConfigFile(t *testing.T) {
-	createTestYamlFile(t, TestYamlFile)
-	defer func() {
-		deleteTestYamlFile(t, TestYamlFile)
-	}()
+	testYamlFile := getTestYamlFile(t)
+	createTestYamlFile(t, testYamlFile)
 
-	cfg, err := ReadYamlConfigFile(TestYamlFile)
+	cfg, err := ReadYamlConfigFile(testYamlFile)
 	test.Assert(t, err == nil)
 	addr, ok := cfg.GetString("Address")
 	test.Assert(t, ok && addr == ":8888")
@@ -193,7 +190,7 @@ func TestYamlConfig_GetFloat(t *testing.T) {
 func TestYamlConfig_GetDuration(t *testing.T) {
 	// duration
 	val, ok := cfg.GetDuration("ExitWaitTimeout")
-	test.Assert(t, ok && val == time.Duration(time.Millisecond*123))
+	test.Assert(t, ok && val == time.Millisecond*123)
 
 	// not duration
 	_, ok = cfg.GetDuration("EnableMetrics")
